@@ -116,6 +116,30 @@ configurable and swappable. The architecture intentionally decouples ingress,
 dispatch, and egress so that adding a new channel or agent doesn't require
 changes to the other components.
 
+## Docker
+
+Pull the image and run the container (mount `claude` CLI, its auth, your config,
+and workspace):
+
+```sh
+docker run -it --rm \
+  -v $(which claude):/usr/local/bin/claude \
+  -v ~/.claude:/home/deno/.claude \
+  -v ~/.config/muxclaw:/home/deno/.config/muxclaw \
+  -v /path/to/your/project:/workspace \
+  ghcr.io/jihchi/muxclaw
+```
+
+This starts a Zellij session with three panes:
+
+```
+┌──────────────┬──────────────┐
+│   Ingress    │   Egress     │
+├──────────────┴──────────────┤
+│     Workspace (/workspace)  │
+└─────────────────────────────┘
+```
+
 ## License
 
 Licensed under either of

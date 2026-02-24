@@ -1,0 +1,23 @@
+show_release_notes false
+show_startup_tips false
+
+layout {
+	pane split_direction="horizontal" {
+		pane split_direction="vertical" {
+			pane name="ingress" {
+				command "deno"
+				args "task" "cli" "ingress"
+			}
+			pane name="egress" {
+				command "deno"
+				args "task" "cli" "egress"
+			}
+		}
+		pane name="workspace" {
+			cwd "/workspace"
+		}
+	}
+	pane size=2 borderless=true {
+		plugin location="zellij:status-bar"
+	}
+}
