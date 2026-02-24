@@ -1,0 +1,5 @@
+*
+!deno.json
+!deno.lock
+!cli.ts
+!layout.kdl
