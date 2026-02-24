@@ -1,0 +1,16 @@
+{
+	"license": "MIT OR Apache-2.0",
+	"imports": {
+		"@valibot/valibot": "jsr:@valibot/valibot@^1.2.0",
+		"grammy": "npm:grammy@^1",
+		"@std/path": "jsr:@std/path@^1"
+	},
+	"fmt": {
+		"singleQuote": true,
+		"useTabs": true,
+		"lineWidth": 80
+	},
+	"tasks": {
+		"cli": "deno run --allow-env --allow-read --allow-write --allow-net --allow-run cli.ts"
+	}
+}

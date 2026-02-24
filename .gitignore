@@ -1,0 +1,14 @@
+# Common files
+*.tmp
+*.temp
+*.log
+
+# macOS
+.DS_Store
+Thumbs.db
+
+# Claude Code
+.claude
+
+# https://mise.jdx.dev/configuration.html#mise-toml
+mise.local.toml
