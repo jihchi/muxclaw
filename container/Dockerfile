@@ -24,7 +24,7 @@ COPY deno.json deno.lock ./
 RUN deno install
 
 # Copy application source
-COPY cli.ts layout.kdl ./
+COPY cli.ts container/layout.kdl ./
 
 # Ensure XDG directories exist
 RUN mkdir -p \
