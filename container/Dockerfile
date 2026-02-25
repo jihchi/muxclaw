@@ -1,8 +1,13 @@
-FROM denoland/deno:2.6.10
+# Build stage
+FROM denoland/deno:2.6.10 AS builder
+WORKDIR /app
 
 # Install nq and dependencies for zellij
 RUN apt-get update \
-	&& apt-get install -y --no-install-recommends nq curl ca-certificates \
+	&& apt-get install -y --no-install-recommends \
+		nq \
+		curl \
+		ca-certificates \
 	&& rm -rf /var/lib/apt/lists/*
 
 # Install zellij
@@ -17,14 +22,16 @@ RUN ARCH=$(dpkg --print-architecture) \
 		| tar -xz -C /usr/local/bin \
 	&& chmod +x /usr/local/bin/zellij
 
+# Production stage
+FROM denoland/deno:2.6.10
 WORKDIR /app
 
-# Cache dependencies
-COPY deno.json deno.lock ./
-RUN deno install
+COPY --from=builder /usr/bin/nq /usr/bin/nqtail /usr/bin/nqterm /usr/bin/
+COPY --from=builder /usr/local/bin/zellij /usr/local/bin/
 
-# Copy application source
-COPY cli.ts container/layout.kdl ./
+# Install dependencies
+COPY deno.json deno.lock cli.ts container/layout.kdl .
+RUN deno install
 
 # Ensure XDG directories exist
 RUN mkdir -p \
