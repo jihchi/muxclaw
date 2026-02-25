@@ -37,6 +37,7 @@ RUN mkdir -p \
 
 ENV HOME=/home/deno
 ENV DENO_NO_UPDATE_CHECK=1
+ENV SHELL=/bin/bash
 
 USER deno
 
