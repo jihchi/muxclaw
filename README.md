@@ -123,8 +123,8 @@ and workspace):
 
 ```sh
 docker run -it --rm \
-  -v $(which claude):/usr/local/bin/claude \
   -v ~/.claude:/home/deno/.claude \
+  -v ~/.claude.json:/home/deno/.claude.json \
   -v ~/.config/muxclaw:/home/deno/.config/muxclaw \
   -v $(pwd)/workspace:/workspace \
   ghcr.io/jihchi/muxclaw
