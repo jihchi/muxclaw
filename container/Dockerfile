@@ -1,5 +1,7 @@
+ARG DENO_VERSION=2.7.1
+
 # Build stage
-FROM denoland/deno:2.6.10 AS builder
+FROM denoland/deno:${DENO_VERSION} AS builder
 WORKDIR /app
 
 # Install nq and dependencies for zellij
@@ -23,7 +25,7 @@ RUN ARCH=$(dpkg --print-architecture) \
 	&& chmod +x /usr/local/bin/zellij
 
 # Production stage
-FROM denoland/deno:2.6.10
+FROM denoland/deno:${DENO_VERSION}
 WORKDIR /app
 
 COPY --from=builder /usr/bin/nq /usr/bin/nqtail /usr/bin/nqterm /usr/bin/
