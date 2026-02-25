@@ -126,7 +126,7 @@ docker run -it --rm \
   -v $(which claude):/usr/local/bin/claude \
   -v ~/.claude:/home/deno/.claude \
   -v ~/.config/muxclaw:/home/deno/.config/muxclaw \
-  -v /path/to/your/project:/workspace \
+  -v $(pwd)/workspace:/workspace \
   ghcr.io/jihchi/muxclaw
 ```
 
