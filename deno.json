@@ -2,6 +2,7 @@
 	"license": "MIT OR Apache-2.0",
 	"imports": {
 		"@std/assert": "jsr:@std/assert@^1.0.19",
+		"@std/testing": "jsr:@std/testing@^1.0.17",
 		"@valibot/valibot": "jsr:@valibot/valibot@^1.2.0",
 		"grammy": "npm:grammy@^1",
 		"@std/path": "jsr:@std/path@^1"
