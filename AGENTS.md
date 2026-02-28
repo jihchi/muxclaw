@@ -9,6 +9,7 @@ AI assistant multiplexer that connects messaging channels to coding agents via
 - **Lint:** `deno lint`
 - **Format:** `deno fmt`
 - **Type check:** `deno check`
+- **Test:** `deno test -P`
 - **Runtime:** Deno (TypeScript, no build step required).
 
 ## Project Overview
