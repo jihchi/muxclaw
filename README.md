@@ -116,6 +116,14 @@ configurable and swappable. The architecture intentionally decouples ingress,
 dispatch, and egress so that adding a new channel or agent doesn't require
 changes to the other components.
 
+## Development
+
+Run tests:
+
+```sh
+deno test -P
+```
+
 ## Docker
 
 Pull the image and run the container (mount `claude` CLI, its auth, your config,
