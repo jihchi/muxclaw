@@ -190,6 +190,52 @@ describe('dispatch', () => {
 		assertSpyCalls(exitStub, 0);
 	});
 
+	it('shows error if message not found with --id', async () => {
+		using readStub = stub(
+			Deno,
+			'readTextFile',
+			(path) => {
+				const p = path.toString();
+				if (p.includes('config.json')) {
+					return Promise.resolve(
+						JSON.stringify({
+							channels: { telegram: { token: 'mock-token' } },
+							allowedUsers: [],
+						}),
+					);
+				}
+				return Promise.reject(new Deno.errors.NotFound());
+			},
+		);
+		using errorStub = stub(console, 'error');
+		using exitStub = stubDenoExit();
+
+		const fullId = 'telegram:999_999';
+		const [channel, id] = fullId.split(':');
+		const expectedPath = join(
+			DATA_DIR,
+			'messages',
+			channel,
+			id,
+			'prompt.txt',
+		);
+
+		await assertRejects(
+			() => dispatch(['--id', fullId]),
+			Error,
+			'exit',
+		);
+
+		assertSpyCall(readStub, 0, { args: [join(CONFIG_DIR, 'config.json')] });
+		assertSpyCall(readStub, 1, { args: [expectedPath] });
+
+		assertSpyCall(errorStub, 0, {
+			args: [`Error: message not found: ${expectedPath}`],
+		});
+
+		assertSpyCalls(exitStub, 1);
+	});
+
 	it('shows error if config file is not found', async () => {
 		using readStub = stub(
 			Deno,
