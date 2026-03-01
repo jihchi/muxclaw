@@ -2,6 +2,7 @@ import { type Api, Bot, type Context } from 'grammy';
 import type { Message } from 'grammy/types';
 import { basename, dirname, join } from '@std/path';
 import * as v from '@valibot/valibot';
+import { convert } from 'telegram-markdown-v2';
 
 const AgentName = v.picklist(['claude']);
 type AgentName = v.InferOutput<typeof AgentName>;
@@ -520,8 +521,9 @@ export async function processJob(
 
 	await bot.api.sendChatAction(meta.chatId, 'typing');
 
-	await bot.api.sendMessage(meta.chatId, output, {
+	await bot.api.sendMessage(meta.chatId, convert(output, 'escape'), {
 		reply_parameters: { message_id: meta.messageId },
+		parse_mode: 'MarkdownV2',
 	});
 
 	// Move job output file into .d/ directory (marks as processed)

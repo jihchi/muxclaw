@@ -5,7 +5,8 @@
 		"@std/testing": "jsr:@std/testing@^1.0.17",
 		"@valibot/valibot": "jsr:@valibot/valibot@^1.2.0",
 		"grammy": "npm:grammy@^1",
-		"@std/path": "jsr:@std/path@^1"
+		"@std/path": "jsr:@std/path@^1",
+		"telegram-markdown-v2": "npm:telegram-markdown-v2@^0.0.4"
 	},
 	"fmt": {
 		"singleQuote": true,
