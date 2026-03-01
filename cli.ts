@@ -2,7 +2,6 @@ import { type Api, Bot, type Context } from 'grammy';
 import type { Message } from 'grammy/types';
 import { basename, dirname, join } from '@std/path';
 import * as v from '@valibot/valibot';
-import { convert } from 'telegram-markdown-v2';
 
 const AgentName = v.picklist(['claude']);
 type AgentName = v.InferOutput<typeof AgentName>;
@@ -493,9 +492,8 @@ async function sendSplitMessage(
 	text: string,
 	replyToMessageId: number,
 ) {
-	const escapedOutput = convert(text, 'escape');
 	const MAX_LENGTH = 4096;
-	let remaining = escapedOutput;
+	let remaining = text;
 
 	while (remaining.length > MAX_LENGTH) {
 		let splitIndex = remaining.lastIndexOf('\n', MAX_LENGTH);
@@ -507,7 +505,6 @@ async function sendSplitMessage(
 		if (chunk) {
 			await bot.api.sendMessage(chatId, chunk, {
 				reply_parameters: { message_id: replyToMessageId },
-				parse_mode: 'MarkdownV2',
 			});
 		}
 		remaining = remaining.slice(splitIndex).trim();
@@ -516,7 +513,6 @@ async function sendSplitMessage(
 	if (remaining) {
 		await bot.api.sendMessage(chatId, remaining, {
 			reply_parameters: { message_id: replyToMessageId },
-			parse_mode: 'MarkdownV2',
 		});
 	}
 }
