@@ -323,7 +323,42 @@ describe('processJob', () => {
 							messageId: 456,
 						}),
 					)
-					: Promise.resolve('this is output'),
+					: Promise.resolve(
+						// https://core.telegram.org/bots/api#markdownv2-style
+						`
+*bold \\*text*
+_italic \\*text_
+__underline__
+~strikethrough~
+||spoiler||
+*bold _italic bold ~italic bold strikethrough ||italic bold strikethrough spoiler||~ __underline italic bold___ bold*
+[inline URL](http://www.example.com/)
+[inline mention of a user](tg://user?id=123456789)
+![👍](tg://emoji?id=5368324170671202286)
+![22:45 tomorrow](tg://time?unix=1647531900&format=wDT)
+![22:45 tomorrow](tg://time?unix=1647531900&format=t)
+![22:45 tomorrow](tg://time?unix=1647531900&format=r)
+![22:45 tomorrow](tg://time?unix=1647531900)
+\`inline fixed-width code\`
+\`\`\`
+pre-formatted fixed-width code block
+\`\`\`
+\`\`\`python
+pre-formatted fixed-width code block written in the Python programming language
+\`\`\`
+HTML tags should be escaped: <del>Deleted text</del>
+>Block quotation started
+>Block quotation continued
+>Block quotation continued
+>Block quotation continued
+>The last line of the block quotation
+**>The expandable block quotation started right after the previous block quotation
+>It is separated from the previous block quotation by an empty bold entity
+>Expandable block quotation continued
+>Hidden by default part of the expandable block quotation started
+>Expandable block quotation continued
+>The last line of the expandable block quotation with the expandability mark||`,
+					),
 		);
 		using renameStub = stub(Deno, 'rename', () => Promise.resolve());
 
@@ -338,7 +373,48 @@ describe('processJob', () => {
 		});
 
 		assertSpyCall(msgSpy, 0, {
-			args: [123, 'this is output', { reply_parameters: { message_id: 456 } }],
+			args: [
+				123,
+				`_italic \\*text_
+*underline*
+~strikethrough~
+\\|\\|spoiler\\|\\|
+_bold _italic bold ~italic bold strikethrough \\|\\|italic bold strikethrough spoiler\\|\\|~ *underline italic bold*_ bold_
+[inline URL](http://www.example.com/)
+[inline mention of a user](tg://user\\?id\\=123456789)
+[👍](tg://emoji\\?id\\=5368324170671202286)
+[22:45 tomorrow](tg://time\\?unix\\=1647531900&format\\=wDT)
+[22:45 tomorrow](tg://time\\?unix\\=1647531900&format\\=t)
+[22:45 tomorrow](tg://time\\?unix\\=1647531900&format\\=r)
+[22:45 tomorrow](tg://time\\?unix\\=1647531900)
+\`inline fixed-width code\`
+
+\`\`\`
+pre-formatted fixed-width code block
+\`\`\`
+
+\`\`\`
+pre-formatted fixed-width code block written in the Python programming language
+\`\`\`
+
+HTML tags should be escaped: <del\\>Deleted text</del\\>
+
+\\> Block quotation started
+\\> Block quotation continued
+\\> Block quotation continued
+\\> Block quotation continued
+\\> The last line of the block quotation
+\\> \\\\\\*\\\\\\*\\\\\\>The expandable block quotation started right after the previous block quotation
+\\> It is separated from the previous block quotation by an empty bold entity
+\\> Expandable block quotation continued
+\\> Hidden by default part of the expandable block quotation started
+\\> Expandable block quotation continued
+`,
+				{
+					parse_mode: 'MarkdownV2',
+					reply_parameters: { message_id: 456 },
+				},
+			],
 		});
 
 		assertSpyCall(renameStub, 0, {
