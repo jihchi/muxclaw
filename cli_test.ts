@@ -491,6 +491,58 @@ HTML tags should be escaped: <del\\>Deleted text</del\\>
 			args: ['/mock/dir/,job', join(DATA_DIR, ',job.d', ',job')],
 		});
 	});
+
+	it('splits long output into multiple messages', async () => {
+		const bot = createBot();
+
+		stub(bot.api, 'sendChatAction', () => Promise.resolve(true));
+		using msgSpy = stub(bot.api, 'sendMessage', () => Promise.resolve({}));
+
+		const longOutput = 'A'.repeat(4000) + '\n' + 'B'.repeat(1000);
+
+		stub(
+			Deno,
+			'readTextFile',
+			(path) =>
+				path.toString().includes('meta.json')
+					? Promise.resolve(
+						JSON.stringify({
+							channel: 'telegram',
+							chatId: 123,
+							messageId: 456,
+						}),
+					)
+					: Promise.resolve(longOutput),
+		);
+		stub(Deno, 'rename', () => Promise.resolve());
+		stub(Deno, 'lstat', () => Promise.reject(new Deno.errors.NotFound()));
+
+		await processJob('/mock/dir', ',job', bot);
+
+		assertSpyCall(msgSpy, 0, {
+			args: [
+				123,
+				'A'.repeat(4000),
+				{
+					reply_parameters: { message_id: 456 },
+					parse_mode: 'MarkdownV2',
+				},
+			],
+		});
+
+		assertSpyCall(msgSpy, 1, {
+			args: [
+				123,
+				'B'.repeat(1000),
+				{
+					reply_parameters: { message_id: 456 },
+					parse_mode: 'MarkdownV2',
+				},
+			],
+		});
+
+		assertSpyCalls(msgSpy, 2);
+	});
 });
 
 describe('ingress handler', () => {

@@ -487,6 +487,40 @@ export async function egress(): Promise<void> {
 	}
 }
 
+async function sendSplitMessage(
+	bot: TelegramBot,
+	chatId: number,
+	text: string,
+	replyToMessageId: number,
+) {
+	const escapedOutput = convert(text, 'escape');
+	const MAX_LENGTH = 4096;
+	let remaining = escapedOutput;
+
+	while (remaining.length > MAX_LENGTH) {
+		let splitIndex = remaining.lastIndexOf('\n', MAX_LENGTH);
+		if (splitIndex === -1) {
+			splitIndex = MAX_LENGTH;
+		}
+
+		const chunk = remaining.slice(0, splitIndex).trim();
+		if (chunk) {
+			await bot.api.sendMessage(chatId, chunk, {
+				reply_parameters: { message_id: replyToMessageId },
+				parse_mode: 'MarkdownV2',
+			});
+		}
+		remaining = remaining.slice(splitIndex).trim();
+	}
+
+	if (remaining) {
+		await bot.api.sendMessage(chatId, remaining, {
+			reply_parameters: { message_id: replyToMessageId },
+			parse_mode: 'MarkdownV2',
+		});
+	}
+}
+
 async function scanAndProcess(
 	scanDir: string,
 	bot: TelegramBot,
@@ -542,10 +576,7 @@ export async function processJob(
 
 	await bot.api.sendChatAction(meta.chatId, 'typing');
 
-	await bot.api.sendMessage(meta.chatId, convert(output, 'escape'), {
-		reply_parameters: { message_id: meta.messageId },
-		parse_mode: 'MarkdownV2',
-	});
+	await sendSplitMessage(bot, meta.chatId, output, meta.messageId);
 
 	// Move job output file into .d/ directory (marks as processed)
 	await Deno.rename(logPath, join(jobDir, jobName));
