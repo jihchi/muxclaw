@@ -9,11 +9,13 @@ import { afterEach, beforeEach, describe, it } from '@std/testing/bdd';
 import { join } from '@std/path';
 
 import {
+	type Config,
 	createIngressHandler,
 	dispatch,
 	type IngressContext,
 	processJob,
 	type TelegramBot,
+	validateWorkspace,
 } from './cli.ts';
 
 const APP_NAME = 'muxclaw';
@@ -111,6 +113,74 @@ Usage:
   ${APP_NAME} dispatch --id <chan>:<id> Read message from natural key store
 `,
 	);
+});
+
+describe('validateWorkspace', () => {
+	it('passes for existing directory', async () => {
+		const config: Config = {
+			channels: { telegram: { token: 'mock' } },
+			allowedUsers: [],
+			workspace: Deno.cwd(),
+			agent: { name: 'claude' },
+		};
+		await validateWorkspace(config);
+	});
+
+	it('fails for non-existent directory', async () => {
+		const config: Config = {
+			channels: { telegram: { token: 'mock' } },
+			allowedUsers: [],
+			workspace: '/non/existent/path',
+			agent: { name: 'claude' },
+		};
+		using exitStub = stubDenoExit();
+		using errorStub = stub(console, 'error');
+
+		await assertRejects(
+			() => validateWorkspace(config),
+			Error,
+			'exit',
+		);
+
+		assertSpyCall(errorStub, 0, {
+			args: [`Error: Workspace directory does not exist: /non/existent/path`],
+		});
+
+		assertSpyCalls(exitStub, 1);
+	});
+
+	it('fails for a file path', async () => {
+		await using tempFile = await (async () => {
+			const path = await Deno.makeTempFile();
+			return {
+				path,
+				[Symbol.asyncDispose]: () => Deno.remove(path),
+			};
+		})();
+
+		const config: Config = {
+			channels: { telegram: { token: 'mock' } },
+			allowedUsers: [],
+			workspace: tempFile.path,
+			agent: { name: 'claude' },
+		};
+		using exitStub = stubDenoExit();
+		using errorStub = stub(console, 'error');
+
+		await assertRejects(
+			() => validateWorkspace(config),
+			Error,
+			'exit',
+		);
+
+		assertSpyCall(errorStub, 0, {
+			args: [
+				`Error: Workspace path is a file, not a directory: ${tempFile.path}`,
+			],
+		});
+
+		assertSpyCalls(exitStub, 2);
+	});
 });
 
 describe('dispatch', () => {
