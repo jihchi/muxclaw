@@ -446,42 +446,36 @@ HTML tags should be escaped: <del>Deleted text</del>
 			args: [
 				123,
 				`_italic \\*text_
-*underline*
+__underline__
 ~strikethrough~
-\\|\\|spoiler\\|\\|
-_bold _italic bold ~italic bold strikethrough \\|\\|italic bold strikethrough spoiler\\|\\|~ *underline italic bold*_ bold_
+||spoiler||
+*bold _italic bold ~italic bold strikethrough ||italic bold strikethrough spoiler||~ __underline italic bold___ bold*
 [inline URL](http://www.example.com/)
-[inline mention of a user](tg://user\\?id\\=123456789)
-[👍](tg://emoji\\?id\\=5368324170671202286)
-[22:45 tomorrow](tg://time\\?unix\\=1647531900&format\\=wDT)
-[22:45 tomorrow](tg://time\\?unix\\=1647531900&format\\=t)
-[22:45 tomorrow](tg://time\\?unix\\=1647531900&format\\=r)
-[22:45 tomorrow](tg://time\\?unix\\=1647531900)
+[inline mention of a user](tg://user?id=123456789)
+![👍](tg://emoji?id=5368324170671202286)
+![22:45 tomorrow](tg://time?unix=1647531900&format=wDT)
+![22:45 tomorrow](tg://time?unix=1647531900&format=t)
+![22:45 tomorrow](tg://time?unix=1647531900&format=r)
+![22:45 tomorrow](tg://time?unix=1647531900)
 \`inline fixed-width code\`
-
 \`\`\`
 pre-formatted fixed-width code block
 \`\`\`
-
-\`\`\`
+\`\`\`python
 pre-formatted fixed-width code block written in the Python programming language
 \`\`\`
-
-HTML tags should be escaped: <del\\>Deleted text</del\\>
-
-\\> Block quotation started
-\\> Block quotation continued
-\\> Block quotation continued
-\\> Block quotation continued
-\\> The last line of the block quotation
-\\> \\\\\\*\\\\\\*\\\\\\>The expandable block quotation started right after the previous block quotation
-\\> It is separated from the previous block quotation by an empty bold entity
-\\> Expandable block quotation continued
-\\> Hidden by default part of the expandable block quotation started
-\\> Expandable block quotation continued
-`,
+HTML tags should be escaped: <del>Deleted text</del>
+>Block quotation started
+>Block quotation continued
+>Block quotation continued
+>Block quotation continued
+>The last line of the block quotation
+**>The expandable block quotation started right after the previous block quotation
+>It is separated from the previous block quotation by an empty bold entity
+>Expandable block quotation continued
+>Hidden by default part of the expandable block quotation started
+>Expandable block quotation continued`,
 				{
-					parse_mode: 'MarkdownV2',
 					reply_parameters: { message_id: 456 },
 				},
 			],
@@ -525,7 +519,6 @@ HTML tags should be escaped: <del\\>Deleted text</del\\>
 				'A'.repeat(4000),
 				{
 					reply_parameters: { message_id: 456 },
-					parse_mode: 'MarkdownV2',
 				},
 			],
 		});
@@ -536,7 +529,6 @@ HTML tags should be escaped: <del\\>Deleted text</del\\>
 				'B'.repeat(1000),
 				{
 					reply_parameters: { message_id: 456 },
-					parse_mode: 'MarkdownV2',
 				},
 			],
 		});
