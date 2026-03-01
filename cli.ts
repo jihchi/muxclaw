@@ -1,4 +1,5 @@
-import { Bot, type Context } from 'grammy';
+import { type Api, Bot, type Context } from 'grammy';
+import type { Message } from 'grammy/types';
 import { basename, dirname, join } from '@std/path';
 import * as v from '@valibot/valibot';
 
@@ -26,6 +27,21 @@ const JobMeta = v.object({
 });
 type JobMeta = v.InferOutput<typeof JobMeta>;
 
+export interface TelegramBot extends Pick<Bot, 'token'> {
+	api: {
+		[K in 'getFile' | 'sendChatAction' | 'sendMessage']: Api[K] extends (
+			...args: infer A
+		) => Promise<infer R> ? (...args: A) => Promise<Partial<R>>
+			: Api[K];
+	};
+}
+
+export interface IngressContext extends Pick<Context, 'replyWithChatAction'> {
+	from?: Partial<Context['from']>;
+	chat?: Partial<Context['chat']>;
+	message?: Partial<Message>;
+}
+
 interface AttachmentInfo {
 	fileId: string;
 	fileName: string;
@@ -33,34 +49,43 @@ interface AttachmentInfo {
 
 const APP_NAME = 'muxclaw';
 const USER_HOME = Deno.env.get('HOME') ?? Deno.env.get('USERPROFILE') ?? '/tmp';
-// XDG Base Directory defaults
-const XDG_CONFIG_HOME = Deno.env.get('XDG_CONFIG_HOME') ??
-	join(USER_HOME, '.config');
-const XDG_DATA_HOME = Deno.env.get('XDG_DATA_HOME') ??
-	join(USER_HOME, '.local', 'share');
-const XDG_STATE_HOME = Deno.env.get('XDG_STATE_HOME') ??
-	join(USER_HOME, '.local', 'state');
-// Application directories
-const APP_CONFIG_DIR = join(XDG_CONFIG_HOME, APP_NAME);
-const APP_DATA_DIR = join(XDG_DATA_HOME, APP_NAME);
-const APP_DATA_MESSAGES = join(APP_DATA_DIR, 'messages');
-const APP_STATE_DIR = join(XDG_STATE_HOME, APP_NAME);
-// Application paths
-const APP_CONFIG = join(APP_CONFIG_DIR, 'config.json');
-// Job queue directories
-const APP_QUEUE = Deno.env.get('NQDIR') ?? join(APP_STATE_DIR, 'queue');
-const APP_QUEUE_COMPLETED = join(APP_QUEUE, 'completed');
-const APP_QUEUE_FAILED = join(APP_QUEUE, 'failed');
+
+const CONFIG_DIR = join(
+	Deno.env.get('XDG_CONFIG_HOME') ?? join(USER_HOME, '.config'),
+	APP_NAME,
+);
+
+const DATA_DIR = join(
+	Deno.env.get('XDG_DATA_HOME') ?? join(USER_HOME, '.local', 'share'),
+	APP_NAME,
+);
+
+const STATE_DIR = join(
+	Deno.env.get('XDG_STATE_HOME') ?? join(USER_HOME, '.local', 'state'),
+	APP_NAME,
+);
+
+const MESSAGES_DIR = join(DATA_DIR, 'messages');
+const APP_CONFIG = join(CONFIG_DIR, 'config.json');
+
+const QUEUE_DIR = Deno.env.get('NQDIR') ?? join(STATE_DIR, 'queue');
+const QUEUE_COMPLETED_DIR = join(QUEUE_DIR, 'completed');
+const QUEUE_FAILED_DIR = join(QUEUE_DIR, 'failed');
 
 function getMessageDir(channel: string, id: string): string {
-	return join(APP_DATA_MESSAGES, channel, id);
+	return join(MESSAGES_DIR, channel, id);
 }
 
 async function loadConfig(): Promise<Config> {
 	try {
 		const text = await Deno.readTextFile(APP_CONFIG);
 		return v.parse(Config, JSON.parse(text));
-	} catch {
+	} catch (err) {
+		console.error(
+			`Error: Failed to load or parse ${APP_CONFIG}:`,
+			err instanceof Error ? err.message : err,
+		);
+
 		return {
 			channels: { telegram: { token: '' } },
 			allowedUsers: [],
@@ -86,9 +111,9 @@ function getAgentCommand(
 }
 
 function logStartup(label: string): void {
-	console.log(`[${label}] CONFIG=${APP_CONFIG_DIR}`);
-	console.log(`[${label}] DATA=${APP_DATA_DIR}`);
-	console.log(`[${label}] QUEUE=${APP_QUEUE}`);
+	console.log(`[${label}] config=${CONFIG_DIR}`);
+	console.log(`[${label}] data=${DATA_DIR}`);
+	console.log(`[${label}] queue=${QUEUE_DIR}`);
 }
 
 function getToken(config: Config): string {
@@ -102,7 +127,7 @@ function getToken(config: Config): string {
 }
 
 function getJobDir(jobFile: string): string {
-	return join(APP_DATA_DIR, `${jobFile}.d`);
+	return join(DATA_DIR, `${jobFile}.d`);
 }
 
 function getJobMeta(jobFile: string): string {
@@ -127,7 +152,7 @@ function mimeToExt(mime: string | undefined, fallback: string): string {
 	return map[mime] ?? fallback;
 }
 
-function getMsgType(message?: Context['message']): string {
+function getMsgType(message?: Partial<Message>): string {
 	if (message?.text) return 'text';
 	if (message?.photo) return 'photo';
 	if (message?.document) {
@@ -141,7 +166,7 @@ function getMsgType(message?: Context['message']): string {
 	return 'other';
 }
 
-function extractAttachments(message?: Context['message']): AttachmentInfo[] {
+function extractAttachments(message?: Partial<Message>): AttachmentInfo[] {
 	const attachments: AttachmentInfo[] = [];
 
 	if (message?.photo && message.photo.length > 0) {
@@ -175,7 +200,7 @@ function extractAttachments(message?: Context['message']): AttachmentInfo[] {
 }
 
 async function downloadAttachment(
-	bot: Bot,
+	bot: TelegramBot,
 	fileId: string,
 	dir: string,
 	fileName: string,
@@ -197,22 +222,11 @@ async function downloadAttachment(
 	return filePath;
 }
 
-async function ingress(): Promise<void> {
-	const config = await loadConfig();
-	const token = getToken(config);
-
-	const allowedIds = new Set(config.allowedUsers.map((u) => u.userId));
-
-	if (allowedIds.size === 0) {
-		console.warn(
-			'Warning: No allowed users configured. All messages will be ignored.',
-		);
-		console.warn(`Add users to ${APP_CONFIG}`);
-	}
-
-	const bot = new Bot(token);
-
-	const handleMessage = async (ctx: Context) => {
+export function createIngressHandler(
+	bot: TelegramBot,
+	allowedIds: Set<string>,
+) {
+	return async (ctx: IngressContext) => {
 		const userId = ctx.from?.id;
 		const chatId = ctx.chat?.id;
 		const messageId = ctx.message?.message_id;
@@ -326,9 +340,9 @@ async function ingress(): Promise<void> {
 				],
 				cwd: import.meta.dirname,
 				env: {
-					NQDIR: APP_QUEUE,
-					NQDONEDIR: APP_QUEUE_COMPLETED,
-					NQFAILDIR: APP_QUEUE_FAILED,
+					NQDIR: QUEUE_DIR,
+					NQDONEDIR: QUEUE_COMPLETED_DIR,
+					NQFAILDIR: QUEUE_FAILED_DIR,
 				},
 				stdin: 'null',
 				stdout: 'piped',
@@ -347,7 +361,7 @@ async function ingress(): Promise<void> {
 			}
 
 			// Create jobId.d symlink to natural key directory
-			const jobLink = join(APP_DATA_DIR, `${jobFile}.d`);
+			const jobLink = join(DATA_DIR, `${jobFile}.d`);
 			try {
 				await Deno.symlink(messageDir, jobLink);
 			} catch (err) {
@@ -371,6 +385,24 @@ async function ingress(): Promise<void> {
 			console.error('[ingress] Error:', err);
 		}
 	};
+}
+
+export async function ingress(): Promise<void> {
+	const config = await loadConfig();
+	const token = getToken(config);
+
+	const allowedIds = new Set(config.allowedUsers.map((u) => u.userId));
+
+	if (allowedIds.size === 0) {
+		console.warn(
+			'Warning: No allowed users configured. All messages will be ignored.',
+		);
+		console.warn(`Add users to ${APP_CONFIG}`);
+	}
+
+	const bot = new Bot(token);
+
+	const handleMessage = createIngressHandler(bot, allowedIds);
 
 	// Private chats: handle all messages
 	bot.chatType('private').on('message', handleMessage);
@@ -386,7 +418,7 @@ async function ingress(): Promise<void> {
 	await bot.start();
 }
 
-async function egress(): Promise<void> {
+export async function egress(): Promise<void> {
 	const config = await loadConfig();
 	const token = getToken(config);
 	const bot = new Bot(token);
@@ -394,8 +426,8 @@ async function egress(): Promise<void> {
 	logStartup('egress');
 
 	// Process any jobs that completed while react was not running
-	await scanAndProcess(APP_QUEUE_COMPLETED, bot);
-	await scanAndProcess(APP_QUEUE_FAILED, bot);
+	await scanAndProcess(QUEUE_COMPLETED_DIR, bot);
+	await scanAndProcess(QUEUE_FAILED_DIR, bot);
 
 	console.log(
 		'[egress] Watching for completed/failed jobs... (Ctrl-C to stop)',
@@ -404,7 +436,7 @@ async function egress(): Promise<void> {
 	// Guard against duplicate fs events for the same file
 	const processing = new Set<string>();
 
-	const watcher = Deno.watchFs([APP_QUEUE_COMPLETED, APP_QUEUE_FAILED]);
+	const watcher = Deno.watchFs([QUEUE_COMPLETED_DIR, QUEUE_FAILED_DIR]);
 
 	for await (const event of watcher) {
 		if (event.kind === 'access' || event.kind === 'other') continue;
@@ -433,7 +465,10 @@ async function egress(): Promise<void> {
 	}
 }
 
-async function scanAndProcess(scanDir: string, bot: Bot): Promise<void> {
+async function scanAndProcess(
+	scanDir: string,
+	bot: TelegramBot,
+): Promise<void> {
 	try {
 		// Collect and sort job files by name (`,HEXTIME.PID`) so they are
 		// processed oldest-first, matching the order of shell glob `,*` used
@@ -457,10 +492,10 @@ async function scanAndProcess(scanDir: string, bot: Bot): Promise<void> {
 	}
 }
 
-async function processJob(
+export async function processJob(
 	scanDir: string,
 	jobName: string,
-	bot: Bot,
+	bot: TelegramBot,
 ): Promise<void> {
 	const logPath = join(scanDir, jobName);
 	const jobDir = getJobDir(jobName);
@@ -493,7 +528,7 @@ async function processJob(
 	await Deno.rename(logPath, join(jobDir, jobName));
 
 	// Clean up symlink if it exists
-	const jobLink = join(APP_DATA_DIR, `${jobName}.d`);
+	const jobLink = join(DATA_DIR, `${jobName}.d`);
 	try {
 		const stat = await Deno.lstat(jobLink);
 		if (stat.isSymlink) {
@@ -506,7 +541,7 @@ async function processJob(
 	console.log(`[egress] Sent response for ${jobName} to chat ${meta.chatId}`);
 }
 
-async function dispatch(args: string[]): Promise<void> {
+export async function dispatch(args: string[]): Promise<void> {
 	const config = await loadConfig();
 	const agentName = config.agent.name;
 
@@ -580,10 +615,10 @@ Usage:
 
 async function ensureDirs(): Promise<void> {
 	await Promise.all([
-		Deno.mkdir(APP_CONFIG_DIR, { recursive: true }),
-		Deno.mkdir(APP_DATA_DIR, { recursive: true }),
-		Deno.mkdir(APP_QUEUE_COMPLETED, { recursive: true }),
-		Deno.mkdir(APP_QUEUE_FAILED, { recursive: true }),
+		Deno.mkdir(CONFIG_DIR, { recursive: true }),
+		Deno.mkdir(DATA_DIR, { recursive: true }),
+		Deno.mkdir(QUEUE_COMPLETED_DIR, { recursive: true }),
+		Deno.mkdir(QUEUE_FAILED_DIR, { recursive: true }),
 	]);
 }
 
