@@ -18,7 +18,7 @@ const Config = v.object({
 		{ name: 'claude' },
 	),
 });
-type Config = v.InferOutput<typeof Config>;
+export type Config = v.InferOutput<typeof Config>;
 
 const JobMeta = v.object({
 	channel: v.literal('telegram'),
@@ -99,6 +99,27 @@ function getWorkspaceDir(config: Config): string {
 	const ws = config.workspace;
 	if (!ws) return Deno.cwd();
 	return ws.startsWith('~/') ? join(USER_HOME, ws.slice(2)) : ws;
+}
+
+export async function validateWorkspace(config: Config): Promise<void> {
+	const ws = getWorkspaceDir(config);
+	try {
+		const stat = await Deno.stat(ws);
+		if (!stat.isDirectory) {
+			console.error(`Error: Workspace path is a file, not a directory: ${ws}`);
+			Deno.exit(1);
+		}
+	} catch (err) {
+		if (err instanceof Deno.errors.NotFound) {
+			console.error(`Error: Workspace directory does not exist: ${ws}`);
+		} else {
+			console.error(
+				`Error: Failed to access workspace ${ws}:`,
+				err instanceof Error ? err.message : err,
+			);
+		}
+		Deno.exit(1);
+	}
 }
 
 function getAgentCommand(
@@ -633,6 +654,9 @@ async function main() {
 	}
 
 	await ensureDirs();
+
+	const config = await loadConfig();
+	await validateWorkspace(config);
 
 	switch (command.toLowerCase()) {
 		case 'ingress':
