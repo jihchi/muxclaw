@@ -504,7 +504,10 @@ async function sendSplitMessage(
 		const chunk = remaining.slice(0, splitIndex).trim();
 		if (chunk) {
 			await bot.api.sendMessage(chatId, chunk, {
-				reply_parameters: { message_id: replyToMessageId },
+				reply_parameters: {
+					message_id: replyToMessageId,
+					allow_sending_without_reply: true,
+				},
 			});
 		}
 		remaining = remaining.slice(splitIndex).trim();
@@ -512,7 +515,10 @@ async function sendSplitMessage(
 
 	if (remaining) {
 		await bot.api.sendMessage(chatId, remaining, {
-			reply_parameters: { message_id: replyToMessageId },
+			reply_parameters: {
+				message_id: replyToMessageId,
+				allow_sending_without_reply: true,
+			},
 		});
 	}
 }

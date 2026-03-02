@@ -476,7 +476,10 @@ HTML tags should be escaped: <del>Deleted text</del>
 >Hidden by default part of the expandable block quotation started
 >Expandable block quotation continued`,
 				{
-					reply_parameters: { message_id: 456 },
+					reply_parameters: {
+						message_id: 456,
+						allow_sending_without_reply: true,
+					},
 				},
 			],
 		});
@@ -518,7 +521,10 @@ HTML tags should be escaped: <del>Deleted text</del>
 				123,
 				'A'.repeat(4000),
 				{
-					reply_parameters: { message_id: 456 },
+					reply_parameters: {
+						message_id: 456,
+						allow_sending_without_reply: true,
+					},
 				},
 			],
 		});
@@ -528,7 +534,10 @@ HTML tags should be escaped: <del>Deleted text</del>
 				123,
 				'B'.repeat(1000),
 				{
-					reply_parameters: { message_id: 456 },
+					reply_parameters: {
+						message_id: 456,
+						allow_sending_without_reply: true,
+					},
 				},
 			],
 		});
