@@ -33,7 +33,7 @@ COPY --from=builder /usr/local/bin/zellij /usr/local/bin/
 
 # Install dependencies
 COPY deno.json deno.lock cli.ts container/layout.kdl .
-RUN deno install
+RUN deno install --allow-import
 
 # Ensure XDG directories exist
 RUN mkdir -p \
