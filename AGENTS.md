@@ -8,8 +8,8 @@ AI assistant multiplexer that connects messaging channels to coding agents via
 - **Run CLI:** `deno task cli`
 - **Lint:** `deno lint`
 - **Format:** `deno fmt`
-- **Type check:** `deno check`
-- **Test:** `deno test -P`
+- **Type check:** `deno check --allow-import`
+- **Test:** `deno test -P --allow-import`
 - **Runtime:** Deno (TypeScript, no build step required).
 
 ## Project Overview
@@ -33,5 +33,4 @@ AI assistant multiplexer that connects messaging channels to coding agents via
   `Deno.exit(1)` for fatal errors.
 - **Job Ordering:** `nq` jobs must be processed in lexicographical order of
   their filenames (`,HEXTIME.PID`) for chronological consistency.
-- **Quality:** Run `deno fmt`, `deno lint`, and `deno check` before every
-  commit.
+- **Quality:** Run lint, type check, format and test before every commit.
