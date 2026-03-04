@@ -19,17 +19,29 @@ const Config = v.object({
 });
 export type Config = v.InferOutput<typeof Config>;
 
+const ChatType = v.picklist(['private', 'group', 'supergroup']);
+type ChatType = v.InferOutput<typeof ChatType>;
+
 const JobMeta = v.object({
 	channel: v.literal('telegram'),
 	chatId: v.number(),
 	messageId: v.number(),
 	userId: v.optional(v.number()),
+	chatType: v.optional(ChatType),
 });
 type JobMeta = v.InferOutput<typeof JobMeta>;
 
 export interface TelegramBot extends Pick<Bot, 'token'> {
 	api: {
-		[K in 'getFile' | 'sendChatAction' | 'sendMessage']: Api[K] extends (
+		[
+			K in
+				| 'getFile'
+				| 'sendChatAction'
+				| 'sendMessage'
+				| 'sendMessageDraft'
+				| 'editMessageText'
+				| 'deleteMessage'
+		]: Api[K] extends (
 			...args: infer A
 		) => Promise<infer R> ? (...args: A) => Promise<Partial<R>>
 			: Api[K];
@@ -128,7 +140,10 @@ function getAgentCommand(
 	// Exhaustive check — if more agents are added, TypeScript will error here
 	const _: 'claude' = agentName;
 	void _;
-	return { cmd: 'claude', args: ['-p', prompt] };
+	return {
+		cmd: 'claude',
+		args: ['--output-format=stream-json', '--verbose', '-p', prompt],
+	};
 }
 
 function logStartup(label: string): void {
@@ -218,6 +233,144 @@ function extractAttachments(message?: Partial<Message>): AttachmentInfo[] {
 	}
 
 	return attachments;
+}
+
+export function extractStreamText(
+	line: string,
+): { type: 'text'; text: string } | { type: 'result'; text: string } | null {
+	if (!line.trim()) return null;
+
+	let parsed: Record<string, unknown>;
+	try {
+		parsed = JSON.parse(line);
+	} catch {
+		return null;
+	}
+
+	if (parsed.type === 'result' && typeof parsed.result === 'string') {
+		return { type: 'result', text: parsed.result };
+	}
+
+	if (parsed.type !== 'assistant') return null;
+
+	const message = parsed.message as
+		| { content?: Array<{ type: string; text?: string }> }
+		| undefined;
+	const content = message?.content;
+	if (!Array.isArray(content)) return null;
+
+	const textBlock = content.find((c) => c.type === 'text' && c.text);
+	if (!textBlock?.text) return null;
+
+	return { type: 'text', text: textBlock.text };
+}
+
+export interface StreamDraftOpts {
+	chatId: number;
+	chatType: 'private' | 'group' | 'supergroup';
+	draftId: number;
+}
+
+export async function streamDrafts(
+	stdout: ReadableStream<Uint8Array>,
+	bot: TelegramBot,
+	opts: StreamDraftOpts,
+): Promise<string> {
+	const { chatId, chatType, draftId } = opts;
+	const DEBOUNCE_MS = 500;
+
+	let currentText = '';
+	let lastSentText = '';
+	let lastSendTime = 0;
+	let pendingTimer: number | undefined;
+	let placeholderMsgId: number | undefined;
+	let resultText = '';
+
+	async function flush(): Promise<void> {
+		if (currentText === lastSentText || !currentText) return;
+		lastSentText = currentText;
+		lastSendTime = Date.now();
+
+		try {
+			if (chatType === 'private') {
+				await bot.api.sendMessageDraft(chatId, draftId, currentText);
+			} else {
+				if (placeholderMsgId == null) {
+					const msg = await bot.api.sendMessage(chatId, currentText);
+					placeholderMsgId = msg.message_id;
+				} else {
+					await bot.api.editMessageText(
+						chatId,
+						placeholderMsgId,
+						currentText,
+					);
+				}
+			}
+		} catch (err) {
+			console.error('[dispatch] Draft send error:', err);
+		}
+	}
+
+	function scheduleFlush(): void {
+		if (pendingTimer != null) return;
+		const elapsed = Date.now() - lastSendTime;
+		const delay = Math.max(0, DEBOUNCE_MS - elapsed);
+		pendingTimer = setTimeout(async () => {
+			pendingTimer = undefined;
+			await flush();
+		}, delay);
+	}
+
+	const reader = stdout
+		.pipeThrough(new TextDecoderStream())
+		.getReader();
+	let buffer = '';
+
+	while (true) {
+		const { done, value } = await reader.read();
+		if (done) break;
+
+		buffer += value;
+		const lines = buffer.split('\n');
+		buffer = lines.pop()!;
+
+		for (const line of lines) {
+			const parsed = extractStreamText(line);
+			if (!parsed) continue;
+
+			if (parsed.type === 'text') {
+				currentText = parsed.text;
+				scheduleFlush();
+			} else if (parsed.type === 'result') {
+				resultText = parsed.text;
+			}
+		}
+	}
+
+	// Process remaining buffer
+	if (buffer.trim()) {
+		const parsed = extractStreamText(buffer);
+		if (parsed?.type === 'result') resultText = parsed.text;
+		if (parsed?.type === 'text') currentText = parsed.text;
+	}
+
+	// Cancel pending timer and do final flush
+	if (pendingTimer != null) {
+		clearTimeout(pendingTimer);
+		pendingTimer = undefined;
+	}
+	await flush();
+
+	// Clean up group placeholder (egress sends the final message)
+	if (placeholderMsgId != null) {
+		try {
+			await bot.api.deleteMessage(chatId, placeholderMsgId);
+		} catch {
+			// Ignore — placeholder may already be gone
+		}
+	}
+
+	return resultText || currentText;
 }
 
 async function downloadAttachment(
@@ -389,11 +542,16 @@ export function createIngressHandler(
 				console.error(`[ingress] Failed to create symlink ${jobLink}:`, err);
 			}
 
+			const chatType = ctx.chat?.type;
 			const meta: JobMeta = {
 				channel: 'telegram',
 				chatId,
 				messageId,
 				userId,
+				chatType: chatType === 'private' || chatType === 'group' ||
+						chatType === 'supergroup'
+					? chatType
+					: undefined,
 			};
 
 			await Deno.writeTextFile(
@@ -600,8 +758,10 @@ export async function processJob(
 export async function dispatch(args: string[]): Promise<void> {
 	const config = await loadConfig();
 	const agentName = config.agent.name;
+	const token = config.channels.telegram.token;
 
 	let prompt: string;
+	let meta: JobMeta | undefined;
 
 	if (args.includes('--stdin')) {
 		const buf = await new Response(Deno.stdin.readable).text();
@@ -618,12 +778,21 @@ export async function dispatch(args: string[]): Promise<void> {
 			console.error('Error: --id format must be <channel>:<id>.');
 			Deno.exit(1);
 		}
-		const promptPath = join(getMessageDir(channel, id), 'prompt.txt');
+		const msgDir = getMessageDir(channel, id);
+		const promptPath = join(msgDir, 'prompt.txt');
 		try {
 			prompt = (await Deno.readTextFile(promptPath)).trim();
 		} catch {
 			console.error(`Error: message not found: ${promptPath}`);
 			Deno.exit(1);
+		}
+		try {
+			meta = v.parse(
+				JobMeta,
+				JSON.parse(await Deno.readTextFile(join(msgDir, 'meta.json'))),
+			);
+		} catch {
+			// No meta — streaming disabled
 		}
 	} else {
 		prompt = args.join(' ');
@@ -642,13 +811,56 @@ export async function dispatch(args: string[]): Promise<void> {
 		args: agent.args,
 		cwd: getWorkspaceDir(config),
 		stdin: 'null',
-		stdout: 'inherit',
+		stdout: 'piped',
 		stderr: 'inherit',
 	});
 
-	const result = await cmd.output();
-	if (!result.success) {
-		Deno.exit(result.code);
+	const child = cmd.spawn();
+
+	let resultText: string;
+
+	if (meta?.chatType && token) {
+		const bot = new Bot(token);
+		resultText = await streamDrafts(child.stdout, bot, {
+			chatId: meta.chatId,
+			chatType: meta.chatType,
+			draftId: meta.messageId,
+		});
+	} else {
+		const reader = child.stdout
+			.pipeThrough(new TextDecoderStream())
+			.getReader();
+		let buffer = '';
+		resultText = '';
+
+		while (true) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			buffer += value;
+			const lineArr = buffer.split('\n');
+			buffer = lineArr.pop()!;
+			for (const line of lineArr) {
+				const parsed = extractStreamText(line);
+				if (parsed?.type === 'result') resultText = parsed.text;
+				else if (parsed?.type === 'text') resultText = parsed.text;
+			}
+		}
+		if (buffer.trim()) {
+			const parsed = extractStreamText(buffer);
+			if (parsed?.type === 'result') resultText = parsed.text;
+			else if (parsed?.type === 'text') resultText = parsed.text;
+		}
+	}
+
+	const status = await child.status;
+
+	if (resultText) {
+		const encoded = new TextEncoder().encode(resultText);
+		await Deno.stdout.write(encoded);
+	}
+
+	if (!status.success) {
+		Deno.exit(status.code);
 	}
 }
 

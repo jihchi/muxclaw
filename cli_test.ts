@@ -1,4 +1,4 @@
-import { assertEquals, assertRejects } from '@std/assert';
+import { assert, assertEquals, assertRejects } from '@std/assert';
 import {
 	assertSpyCall,
 	assertSpyCalls,
@@ -12,8 +12,10 @@ import {
 	type Config,
 	createIngressHandler,
 	dispatch,
+	extractStreamText,
 	type IngressContext,
 	processJob,
+	streamDrafts,
 	type TelegramBot,
 	validateWorkspace,
 } from './cli.ts';
@@ -41,8 +43,9 @@ const QUEUE_COMPLETED_DIR = join(QUEUE_DIR, 'completed');
 const QUEUE_FAILED_DIR = join(QUEUE_DIR, 'failed');
 
 function fakeCommand(
-	overrides?: Partial<Deno.CommandOutput>,
+	overrides?: Partial<Deno.CommandOutput> & { spawnOutput?: string },
 ): Deno.Command {
+	const spawnOutput = overrides?.spawnOutput ?? '';
 	return {
 		output: () =>
 			Promise.resolve({
@@ -56,16 +59,26 @@ function fakeCommand(
 		outputSync: (): never => {
 			throw new Error('not implemented');
 		},
-		spawn: (): never => {
-			throw new Error('not implemented');
-		},
+		spawn: () =>
+			({
+				stdout: new ReadableStream<Uint8Array>({
+					start(controller) {
+						controller.enqueue(new TextEncoder().encode(spawnOutput));
+						controller.close();
+					},
+				}),
+				status: Promise.resolve({ success: true, code: 0, signal: null }),
+			}) as unknown as Deno.ChildProcess,
 	};
 }
 
 function fakeContext(
 	opts: {
 		from?: { id: number; username?: string };
-		chat?: { id: number };
+		chat?: {
+			id: number;
+			type?: 'private' | 'group' | 'supergroup' | 'channel';
+		};
 		message?: { message_id: number; text?: string };
 	},
 ): IngressContext {
@@ -88,6 +101,9 @@ function createBot(): TelegramBot {
 			getFile: () => Promise.resolve({ file_path: 'mock/path' }),
 			sendChatAction: () => Promise.resolve(true),
 			sendMessage: () => Promise.resolve({}),
+			sendMessageDraft: () => Promise.resolve(true),
+			editMessageText: () => Promise.resolve({}),
+			deleteMessage: () => Promise.resolve(true),
 		},
 	};
 }
@@ -196,8 +212,19 @@ describe('dispatch', () => {
 					}),
 				),
 		);
-		using cmdStub = stub(Deno, 'Command', () => fakeCommand());
+		const streamOutput =
+			'{"type":"result","subtype":"success","result":"hello","is_error":false}\n';
+		using cmdStub = stub(
+			Deno,
+			'Command',
+			() => fakeCommand({ spawnOutput: streamOutput }),
+		);
 		using exitStub = stubDenoExit();
+		using _writeStub = stub(
+			Deno.stdout,
+			'write',
+			() => Promise.resolve(5),
+		);
 
 		await dispatch(['hello', 'world']);
 
@@ -205,10 +232,10 @@ describe('dispatch', () => {
 
 		assertSpyCall(cmdStub, 0, {
 			args: ['claude', {
-				args: ['-p', 'hello world'],
+				args: ['--output-format=stream-json', '--verbose', '-p', 'hello world'],
 				cwd: Deno.cwd(),
 				stdin: 'null',
-				stdout: 'inherit',
+				stdout: 'piped',
 				stderr: 'inherit',
 			}],
 		});
@@ -236,8 +263,19 @@ describe('dispatch', () => {
 				return Promise.resolve('');
 			},
 		);
-		using cmdStub = stub(Deno, 'Command', () => fakeCommand());
+		const streamOutput =
+			'{"type":"result","subtype":"success","result":"ok","is_error":false}\n';
+		using cmdStub = stub(
+			Deno,
+			'Command',
+			() => fakeCommand({ spawnOutput: streamOutput }),
+		);
 		using exitStub = stubDenoExit();
+		using _writeStub = stub(
+			Deno.stdout,
+			'write',
+			() => Promise.resolve(2),
+		);
 
 		await dispatch(['--id', 'telegram:1_1']);
 
@@ -249,10 +287,15 @@ describe('dispatch', () => {
 
 		assertSpyCall(cmdStub, 0, {
 			args: ['claude', {
-				args: ['-p', 'mocked prompt'],
+				args: [
+					'--output-format=stream-json',
+					'--verbose',
+					'-p',
+					'mocked prompt',
+				],
 				cwd: Deno.cwd(),
 				stdin: 'null',
-				stdout: 'inherit',
+				stdout: 'piped',
 				stderr: 'inherit',
 			}],
 		});
@@ -492,12 +535,16 @@ HTML tags should be escaped: <del>Deleted text</del>
 	it('splits long output into multiple messages', async () => {
 		const bot = createBot();
 
-		stub(bot.api, 'sendChatAction', () => Promise.resolve(true));
+		using _actionStub = stub(
+			bot.api,
+			'sendChatAction',
+			() => Promise.resolve(true),
+		);
 		using msgSpy = stub(bot.api, 'sendMessage', () => Promise.resolve({}));
 
 		const longOutput = 'A'.repeat(4000) + '\n' + 'B'.repeat(1000);
 
-		stub(
+		using _readStub = stub(
 			Deno,
 			'readTextFile',
 			(path) =>
@@ -511,8 +558,12 @@ HTML tags should be escaped: <del>Deleted text</del>
 					)
 					: Promise.resolve(longOutput),
 		);
-		stub(Deno, 'rename', () => Promise.resolve());
-		stub(Deno, 'lstat', () => Promise.reject(new Deno.errors.NotFound()));
+		using _renameStub = stub(Deno, 'rename', () => Promise.resolve());
+		using _lstatStub = stub(
+			Deno,
+			'lstat',
+			() => Promise.reject(new Deno.errors.NotFound()),
+		);
 
 		await processJob('/mock/dir', ',job', bot);
 
@@ -544,6 +595,45 @@ HTML tags should be escaped: <del>Deleted text</del>
 
 		assertSpyCalls(msgSpy, 2);
 	});
+
+	it('accepts chatType in meta', async () => {
+		const bot = createBot();
+
+		using _actionStub = stub(
+			bot.api,
+			'sendChatAction',
+			() => Promise.resolve(true),
+		);
+		using _msgStub = stub(
+			bot.api,
+			'sendMessage',
+			() => Promise.resolve({}),
+		);
+
+		using _readStub = stub(
+			Deno,
+			'readTextFile',
+			(path) =>
+				path.toString().includes('meta.json')
+					? Promise.resolve(
+						JSON.stringify({
+							channel: 'telegram',
+							chatId: 123,
+							messageId: 456,
+							chatType: 'private',
+						}),
+					)
+					: Promise.resolve('test output'),
+		);
+		using _renameStub = stub(Deno, 'rename', () => Promise.resolve());
+		using _lstatStub = stub(
+			Deno,
+			'lstat',
+			() => Promise.reject(new Deno.errors.NotFound()),
+		);
+
+		await processJob('/mock/dir', ',job', bot);
+	});
 });
 
 describe('ingress handler', () => {
@@ -562,7 +652,7 @@ describe('ingress handler', () => {
 		const handler = createIngressHandler(bot, new Set(['123']));
 		const ctx = fakeContext({
 			from: { id: 123, username: 'user' },
-			chat: { id: 456 },
+			chat: { id: 456, type: 'private' },
 			message: { message_id: 789, text: 'hello' },
 		});
 
@@ -610,5 +700,151 @@ describe('ingress handler', () => {
 		});
 
 		assertSpyCall(symlinkStub, 0, { args: [msgDir, join(DATA_DIR, ',job.d')] });
+
+		const metaCall = writeStub.calls.find((c) =>
+			c.args[0].toString().includes('meta.json')
+		);
+		const meta = JSON.parse(metaCall!.args[1] as string);
+		assertEquals(meta.chatType, 'private');
+	});
+});
+
+describe('streamDrafts', () => {
+	it('streams text via sendMessageDraft for private chat', async () => {
+		const bot = createBot();
+		using draftSpy = stub(
+			bot.api,
+			'sendMessageDraft',
+			() => Promise.resolve(true),
+		);
+
+		const lines = [
+			'{"type":"assistant","message":{"content":[{"type":"text","text":"Hi"}]}}',
+			'{"type":"result","subtype":"success","result":"Hi","is_error":false}',
+		].join('\n') + '\n';
+
+		const stream = new ReadableStream<Uint8Array>({
+			start(controller) {
+				controller.enqueue(new TextEncoder().encode(lines));
+				controller.close();
+			},
+		});
+
+		const result = await streamDrafts(stream, bot, {
+			chatId: 123,
+			chatType: 'private',
+			draftId: 1,
+		});
+
+		assertEquals(result, 'Hi');
+		// At least one draft call with the text
+		assert(draftSpy.calls.length >= 1);
+		// Last draft call should have the final text
+		const lastCall = draftSpy.calls[draftSpy.calls.length - 1];
+		assertEquals(lastCall.args[0], 123); // chatId
+		assertEquals(lastCall.args[1], 1); // draftId
+		assertEquals(lastCall.args[2], 'Hi'); // text
+	});
+
+	it('streams text via sendMessage+editMessageText for group chat', async () => {
+		const bot = createBot();
+		using msgSpy = stub(
+			bot.api,
+			'sendMessage',
+			() => Promise.resolve({ message_id: 999 }),
+		);
+		using _editSpy = stub(
+			bot.api,
+			'editMessageText',
+			() => Promise.resolve({}),
+		);
+		using _deleteSpy = stub(
+			bot.api,
+			'deleteMessage',
+			() => Promise.resolve(true),
+		);
+
+		const lines = [
+			'{"type":"assistant","message":{"content":[{"type":"text","text":"Hello"}]}}',
+			'{"type":"assistant","message":{"content":[{"type":"text","text":"Hello world"}]}}',
+			'{"type":"result","subtype":"success","result":"Hello world","is_error":false}',
+		].join('\n') + '\n';
+
+		const stream = new ReadableStream<Uint8Array>({
+			start(controller) {
+				controller.enqueue(new TextEncoder().encode(lines));
+				controller.close();
+			},
+		});
+
+		const result = await streamDrafts(stream, bot, {
+			chatId: 123,
+			chatType: 'group',
+			draftId: 1,
+		});
+
+		assertEquals(result, 'Hello world');
+		// First interaction should be sendMessage (placeholder)
+		assertSpyCalls(msgSpy, 1);
+	});
+
+	it('returns result text on success', async () => {
+		const bot = createBot();
+
+		const lines =
+			'{"type":"result","subtype":"success","result":"Final answer","is_error":false}\n';
+
+		const stream = new ReadableStream<Uint8Array>({
+			start(controller) {
+				controller.enqueue(new TextEncoder().encode(lines));
+				controller.close();
+			},
+		});
+
+		const result = await streamDrafts(stream, bot, {
+			chatId: 123,
+			chatType: 'private',
+			draftId: 1,
+		});
+
+		assertEquals(result, 'Final answer');
+	});
+});
+
+describe('extractStreamText', () => {
+	it('extracts text from assistant events', () => {
+		const lines = [
+			'{"type":"system","subtype":"init","session_id":"abc"}',
+			'{"type":"assistant","message":{"content":[{"type":"text","text":"Hello "}]}}',
+			'{"type":"assistant","message":{"content":[{"type":"text","text":"Hello world"}]}}',
+			'{"type":"result","subtype":"success","result":"Hello world","is_error":false}',
+		];
+		const texts: string[] = [];
+		let finalResult = '';
+		for (const line of lines) {
+			const parsed = extractStreamText(line);
+			if (parsed?.type === 'text') texts.push(parsed.text);
+			if (parsed?.type === 'result') finalResult = parsed.text;
+		}
+		assertEquals(texts, ['Hello ', 'Hello world']);
+		assertEquals(finalResult, 'Hello world');
+	});
+
+	it('ignores non-text events', () => {
+		const lines = [
+			'{"type":"system","subtype":"hook_started"}',
+			'{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"hmm"}]}}',
+			'{"type":"assistant","message":{"content":[{"type":"tool_use","id":"x","name":"Read","input":{}}]}}',
+			'{"type":"user","message":{"role":"user","content":[]}}',
+		];
+		for (const line of lines) {
+			const parsed = extractStreamText(line);
+			assertEquals(parsed, null);
+		}
+	});
+
+	it('returns null for invalid JSON', () => {
+		assertEquals(extractStreamText('not json'), null);
+		assertEquals(extractStreamText(''), null);
 	});
 });
