@@ -1,4 +1,4 @@
-import { assertEquals, assertRejects } from '@std/assert';
+import { assertEquals, assertGreaterOrEqual, assertRejects } from '@std/assert';
 import {
 	assertSpyCall,
 	assertSpyCalls,
@@ -7,6 +7,7 @@ import {
 } from '@std/testing/mock';
 import { afterEach, beforeEach, describe, it } from '@std/testing/bdd';
 import { join } from '@std/path';
+import { Api } from 'grammy';
 
 import {
 	type Config,
@@ -42,6 +43,7 @@ const QUEUE_FAILED_DIR = join(QUEUE_DIR, 'failed');
 
 function fakeCommand(
 	overrides?: Partial<Deno.CommandOutput>,
+	spawnOverrides?: Partial<Deno.ChildProcess>,
 ): Deno.Command {
 	return {
 		output: () =>
@@ -56,9 +58,17 @@ function fakeCommand(
 		outputSync: (): never => {
 			throw new Error('not implemented');
 		},
-		spawn: (): never => {
-			throw new Error('not implemented');
-		},
+		spawn: () => ({
+			status: Promise.resolve({ success: true, code: 0, signal: null }),
+			stdout: new ReadableStream(),
+			stderr: new ReadableStream(),
+			stdin: new WritableStream(),
+			kill: () => {},
+			ref: () => {},
+			unref: () => {},
+			[Symbol.dispose]: () => {},
+			...spawnOverrides,
+		} as unknown as Deno.ChildProcess),
 	};
 }
 
@@ -81,6 +91,20 @@ function stubDenoExit() {
 	});
 }
 
+function stubFiles(mocks: Record<string, string | object>): Stub {
+	return stub(Deno, 'readTextFile', (path) => {
+		const p = path.toString();
+		for (const [key, value] of Object.entries(mocks)) {
+			if (p.includes(key)) {
+				return Promise.resolve(
+					typeof value === 'string' ? value : JSON.stringify(value),
+				);
+			}
+		}
+		return Promise.reject(new Deno.errors.NotFound());
+	});
+}
+
 function createBot(): TelegramBot {
 	return {
 		token: 'mock-token',
@@ -88,6 +112,7 @@ function createBot(): TelegramBot {
 			getFile: () => Promise.resolve({ file_path: 'mock/path' }),
 			sendChatAction: () => Promise.resolve(true),
 			sendMessage: () => Promise.resolve({}),
+			sendMessageDraft: () => Promise.resolve(true),
 		},
 	};
 }
@@ -185,23 +210,16 @@ describe('validateWorkspace', () => {
 
 describe('dispatch', () => {
 	it('calls claude with joined args', async () => {
-		using readStub = stub(
-			Deno,
-			'readTextFile',
-			() =>
-				Promise.resolve(
-					JSON.stringify({
-						channels: { telegram: { token: 'mock-token' } },
-						allowedUsers: [],
-					}),
-				),
-		);
+		using _ = stubFiles({
+			'config.json': {
+				channels: { telegram: { token: 'mock-token' } },
+				allowedUsers: [],
+			},
+		});
 		using cmdStub = stub(Deno, 'Command', () => fakeCommand());
 		using exitStub = stubDenoExit();
 
 		await dispatch(['hello', 'world']);
-
-		assertSpyCall(readStub, 0, { args: [join(CONFIG_DIR, 'config.json')] });
 
 		assertSpyCall(cmdStub, 0, {
 			args: ['claude', {
@@ -217,47 +235,67 @@ describe('dispatch', () => {
 	});
 
 	it('reads prompt from file with --id', async () => {
-		using readStub = stub(
-			Deno,
-			'readTextFile',
-			(path) => {
-				const p = path.toString();
-				if (p.includes('config.json')) {
-					return Promise.resolve(
-						JSON.stringify({
-							channels: { telegram: { token: 'mock-token' } },
-							allowedUsers: [],
-						}),
-					);
-				}
-				if (p.includes('prompt.txt')) {
-					return Promise.resolve('mocked prompt');
-				}
-				return Promise.resolve('');
+		using _ = stubFiles({
+			'config.json': {
+				channels: { telegram: { token: 'mock-token' } },
+				allowedUsers: [],
 			},
+			'prompt.txt': 'mocked prompt',
+			'meta.json': {
+				channel: 'telegram',
+				chatId: 123,
+				messageId: 456,
+			},
+		});
+
+		using draftSpy = stub(
+			Api.prototype,
+			'sendMessageDraft',
+			() => Promise.resolve(true),
 		);
-		using cmdStub = stub(Deno, 'Command', () => fakeCommand());
-		using exitStub = stubDenoExit();
+
+		const emptyStream = new ReadableStream({
+			start(controller) {
+				controller.close();
+			},
+		});
+
+		using cmdStub = stub(
+			Deno,
+			'Command',
+			() =>
+				fakeCommand({}, {
+					stdout: emptyStream as unknown as Deno.SubprocessReadableStream,
+				}),
+		);
+		using logStub = stub(console, 'log');
+
+		const now = Date.now();
 
 		await dispatch(['--id', 'telegram:1_1']);
 
-		assertSpyCall(readStub, 0, { args: [join(CONFIG_DIR, 'config.json')] });
+		assertSpyCalls(logStub, 1);
 
-		assertSpyCall(readStub, 1, {
-			args: [join(DATA_DIR, 'messages', 'telegram', '1_1', 'prompt.txt')],
-		});
+		assertEquals(draftSpy.calls[0].args[0], 123);
+		assertGreaterOrEqual(draftSpy.calls[0].args[1], now);
+		assertEquals(draftSpy.calls[0].args[2], '(💬 processing...)');
 
 		assertSpyCall(cmdStub, 0, {
 			args: ['claude', {
-				args: ['-p', 'mocked prompt'],
+				args: [
+					'--output-format',
+					'stream-json',
+					'--verbose',
+					'--include-partial-messages',
+					'-p',
+					'mocked prompt',
+				],
 				cwd: Deno.cwd(),
 				stdin: 'null',
-				stdout: 'inherit',
+				stdout: 'piped',
 				stderr: 'inherit',
 			}],
 		});
-
-		assertSpyCalls(exitStub, 0);
 	});
 
 	it('shows error if message not found with --id', async () => {
@@ -306,6 +344,107 @@ describe('dispatch', () => {
 		assertSpyCalls(exitStub, 1);
 	});
 
+	it('streams output when meta.json is present with telegram channel', async () => {
+		const fullId = 'telegram:1_1';
+
+		using _ = stubFiles({
+			'config.json': {
+				channels: { telegram: { token: 'mock-token' } },
+				allowedUsers: [],
+			},
+			'prompt.txt': 'mocked prompt',
+			'meta.json': {
+				channel: 'telegram',
+				chatId: 123,
+				messageId: 456,
+			},
+		});
+
+		const events = [
+			{
+				type: 'stream_event',
+				event: {
+					type: 'content_block_delta',
+					index: 0,
+					delta: { type: 'text_delta', text: 'A'.repeat(250) },
+				},
+			},
+			{
+				type: 'stream_event',
+				event: {
+					type: 'content_block_delta',
+					index: 0,
+					delta: { type: 'text_delta', text: 'B'.repeat(250) },
+				},
+			},
+			{
+				type: 'result',
+				subtype: 'success',
+				result: 'A'.repeat(250) + 'B'.repeat(250),
+			},
+		].map((e) => JSON.stringify(e)).map((json) => `${json}\n`);
+
+		const encoder = new TextEncoder();
+		const stdoutStream = new ReadableStream({
+			start(controller) {
+				for (const event of events) {
+					controller.enqueue(encoder.encode(event));
+				}
+				controller.close();
+			},
+		});
+
+		using draftSpy = stub(
+			Api.prototype,
+			'sendMessageDraft',
+			() => Promise.resolve(true),
+		);
+
+		using cmdStub = stub(
+			Deno,
+			'Command',
+			() =>
+				fakeCommand({}, {
+					stdout: stdoutStream as unknown as Deno.SubprocessReadableStream,
+				}),
+		);
+		using logStub = stub(console, 'log');
+
+		await dispatch(['--id', fullId]);
+
+		assertSpyCall(cmdStub, 0, {
+			args: ['claude', {
+				args: [
+					'--output-format',
+					'stream-json',
+					'--verbose',
+					'--include-partial-messages',
+					'-p',
+					'mocked prompt',
+				],
+				cwd: Deno.cwd(),
+				stdin: 'null',
+				stdout: 'piped',
+				stderr: 'inherit',
+			}],
+		});
+
+		// 1 initial draft "...💬" + 2 drafts during streaming (total 3)
+		assertSpyCalls(draftSpy, 3);
+
+		const draftChatIds = draftSpy.calls.map((c) => c.args[0]);
+		assertEquals(draftChatIds, [123, 123, 123]);
+
+		const draftTexts = draftSpy.calls.map((c) => c.args[2]);
+		assertEquals(draftTexts, [
+			'(💬 processing...)',
+			'A'.repeat(250),
+			'A'.repeat(250) + 'B'.repeat(250),
+		]);
+
+		assertSpyCall(logStub, 0, { args: ['A'.repeat(250) + 'B'.repeat(250)] });
+	});
+
 	it('shows error if config file is not found', async () => {
 		using readStub = stub(
 			Deno,
@@ -334,11 +473,9 @@ describe('dispatch', () => {
 	});
 
 	it('shows error if failed to parse json', async () => {
-		using readStub = stub(
-			Deno,
-			'readTextFile',
-			() => Promise.resolve('invalid json'),
-		);
+		using _ = stubFiles({
+			'config.json': 'invalid json',
+		});
 		using errorStub = stub(console, 'error');
 		using exitStub = stubDenoExit();
 
@@ -347,8 +484,6 @@ describe('dispatch', () => {
 			Error,
 			'exit',
 		);
-
-		assertSpyCalls(readStub, 1);
 
 		assertSpyCall(errorStub, 0, {
 			args: [
@@ -381,21 +516,13 @@ describe('processJob', () => {
 			() => Promise.resolve(true),
 		);
 		using msgSpy = stub(bot.api, 'sendMessage', () => Promise.resolve({}));
-		using readStub = stub(
-			Deno,
-			'readTextFile',
-			(path) =>
-				path.toString().includes('meta.json')
-					? Promise.resolve(
-						JSON.stringify({
-							channel: 'telegram',
-							chatId: 123,
-							messageId: 456,
-						}),
-					)
-					: Promise.resolve(
-						// https://core.telegram.org/bots/api#markdownv2-style
-						`
+		using _ = stubFiles({
+			'meta.json': {
+				channel: 'telegram',
+				chatId: 123,
+				messageId: 456,
+			},
+			',job': `
 *bold \\*text*
 _italic \\*text_
 __underline__
@@ -428,18 +555,13 @@ HTML tags should be escaped: <del>Deleted text</del>
 >Hidden by default part of the expandable block quotation started
 >Expandable block quotation continued
 >The last line of the expandable block quotation with the expandability mark||`,
-					),
-		);
+		});
 		using renameStub = stub(Deno, 'rename', () => Promise.resolve());
 
 		await processJob('/mock/dir', ',job', bot);
 
 		assertSpyCall(actionSpy, 0, {
 			args: [123, 'typing'],
-		});
-
-		assertSpyCall(readStub, 0, {
-			args: [join(DATA_DIR, ',job.d', 'meta.json')],
 		});
 
 		assertSpyCall(msgSpy, 0, {
@@ -497,20 +619,14 @@ HTML tags should be escaped: <del>Deleted text</del>
 
 		const longOutput = 'A'.repeat(4000) + '\n' + 'B'.repeat(1000);
 
-		stub(
-			Deno,
-			'readTextFile',
-			(path) =>
-				path.toString().includes('meta.json')
-					? Promise.resolve(
-						JSON.stringify({
-							channel: 'telegram',
-							chatId: 123,
-							messageId: 456,
-						}),
-					)
-					: Promise.resolve(longOutput),
-		);
+		using _ = stubFiles({
+			'meta.json': {
+				channel: 'telegram',
+				chatId: 123,
+				messageId: 456,
+			},
+			',job': longOutput,
+		});
 		stub(Deno, 'rename', () => Promise.resolve());
 		stub(Deno, 'lstat', () => Promise.reject(new Deno.errors.NotFound()));
 
