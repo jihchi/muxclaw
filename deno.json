@@ -6,7 +6,8 @@
 		"@valibot/valibot": "jsr:@valibot/valibot@^1.2.0",
 		"grammy": "https://deno.land/x/grammy@v1.41.0/mod.ts",
 		"grammy/types": "https://deno.land/x/grammy@v1.41.0/types.ts",
-		"@std/path": "jsr:@std/path@^1"
+		"@std/path": "jsr:@std/path@^1",
+		"@std/streams": "jsr:@std/streams@^1"
 	},
 	"fmt": {
 		"singleQuote": true,
