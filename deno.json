@@ -23,6 +23,7 @@
 		}
 	},
 	"tasks": {
-		"cli": "deno run --allow-import --allow-env --allow-read --allow-write --allow-net --allow-run cli.ts"
+		"cli": "deno run --allow-import --allow-env --allow-read --allow-write --allow-net --allow-run cli.ts",
+		"tidy": "deno lint && deno check --allow-import && deno fmt && deno test -P --allow-import"
 	}
 }
