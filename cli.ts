@@ -134,6 +134,7 @@ const QUEUE_FAILED_DIR = join(QUEUE_DIR, 'failed');
 
 const THROTTLE_MS = 500;
 const THROTTLE_CHARS = 500;
+const TELEGRAM_MAX_MESSAGE_LENGTH = 4096;
 
 function getMessageDir(channel: string, id: string): string {
 	return join(MESSAGES_DIR, channel, id);
@@ -621,13 +622,12 @@ async function sendSplitMessage(
 	text: string,
 	replyToMessageId: number,
 ) {
-	const MAX_LENGTH = 4096;
 	let remaining = text;
 
-	while (remaining.length > MAX_LENGTH) {
-		let splitIndex = remaining.lastIndexOf('\n', MAX_LENGTH);
+	while (remaining.length > TELEGRAM_MAX_MESSAGE_LENGTH) {
+		let splitIndex = remaining.lastIndexOf('\n', TELEGRAM_MAX_MESSAGE_LENGTH);
 		if (splitIndex === -1) {
-			splitIndex = MAX_LENGTH;
+			splitIndex = TELEGRAM_MAX_MESSAGE_LENGTH;
 		}
 
 		const chunk = remaining.slice(0, splitIndex).trim();
@@ -722,6 +722,23 @@ export async function processJob(
 	console.log(`[egress] Sent response for ${jobName} to chat ${meta.chatId}`);
 }
 
+export function truncateDraft(text: string): string {
+	if (text.length <= TELEGRAM_MAX_MESSAGE_LENGTH) {
+		return text;
+	}
+
+	// Leave room for ellipsis
+	const tail = text.slice(-(TELEGRAM_MAX_MESSAGE_LENGTH - 6)); // -6 to be safe with "...\n" and off-by-ones
+	const firstNewlineIdx = tail.indexOf('\n');
+
+	if (firstNewlineIdx !== -1) {
+		return '...\n' + tail.slice(firstNewlineIdx + 1);
+	}
+
+	// Fallback if no newline
+	return '...' + text.slice(-(TELEGRAM_MAX_MESSAGE_LENGTH - 3));
+}
+
 export async function processStreamOutput(
 	stdout: ReadableStream<Uint8Array>,
 	chatId: number,
@@ -763,7 +780,11 @@ export async function processStreamOutput(
 
 				if (elapsed || grown) {
 					try {
-						await bot.api.sendMessageDraft(chatId, draftId, pile);
+						await bot.api.sendMessageDraft(
+							chatId,
+							draftId,
+							truncateDraft(pile),
+						);
 						lastSentAt = now;
 						lastSentLen = pile.length;
 						hasUnsentDraft = false;
@@ -784,7 +805,7 @@ export async function processStreamOutput(
 
 	if (hasUnsentDraft) {
 		try {
-			await bot.api.sendMessageDraft(chatId, draftId, pile);
+			await bot.api.sendMessageDraft(chatId, draftId, truncateDraft(pile));
 		} catch (err) {
 			console.error('[dispatch] sendMessageDraft failed:', err);
 		}

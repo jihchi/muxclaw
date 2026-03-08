@@ -1,4 +1,9 @@
-import { assertEquals, assertGreaterOrEqual, assertRejects } from '@std/assert';
+import {
+	assertEquals,
+	assertGreaterOrEqual,
+	assertRejects,
+	assertStrictEquals,
+} from '@std/assert';
 import {
 	assertSpyCall,
 	assertSpyCalls,
@@ -21,6 +26,7 @@ import {
 	processStreamOutput,
 	StreamEvent,
 	type TelegramBot,
+	truncateDraft,
 	validateWorkspace,
 } from './cli.ts';
 
@@ -184,6 +190,25 @@ describe('getAgentParser', () => {
 			message: { role: 'assistant', content: [{ type: 'text', text: 'done' }] },
 		};
 		assertEquals(parser(json), { type: 'final', text: 'done' });
+	});
+});
+
+describe('truncateDraft', () => {
+	it('handles text within limit', () => {
+		const text = 'short text';
+		assertStrictEquals(truncateDraft(text), 'short text');
+	});
+
+	it('truncates long text at newline', () => {
+		const text = 'a'.repeat(2000) + '\n' + 'b'.repeat(2100); // 4101 chars total
+		const result = truncateDraft(text);
+		assertStrictEquals(result, '...\n' + 'b'.repeat(2100));
+	});
+
+	it('falls back when no newline exists', () => {
+		const text = 'a'.repeat(5000);
+		const result = truncateDraft(text);
+		assertStrictEquals(result, '...' + 'a'.repeat(4093)); // 4096 total
 	});
 });
 
