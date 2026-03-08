@@ -25,6 +25,7 @@ import {
 	processJob,
 	processStreamOutput,
 	StreamEvent,
+	type StreamSender,
 	type TelegramBot,
 	truncateDraft,
 	validateWorkspace,
@@ -120,6 +121,7 @@ function createBot(): TelegramBot {
 	return {
 		token: 'mock-token',
 		api: {
+			editMessageText: () => Promise.resolve({}),
 			getFile: () => Promise.resolve({ file_path: 'mock/path' }),
 			sendChatAction: () => Promise.resolve(true),
 			sendMessage: () => Promise.resolve({}),
@@ -233,22 +235,21 @@ describe('processStreamOutput', () => {
 			},
 		});
 
-		const bot = createBot();
-
-		using draftSpy = stub(
-			bot.api,
-			'sendMessageDraft',
-			() => Promise.resolve(true),
-		);
+		const calls: string[] = [];
+		const sender: StreamSender = {
+			throttleMs: 500,
+			update: (text: string) => {
+				calls.push(text);
+				return Promise.resolve();
+			},
+		};
 
 		const parser: Parser = (json: unknown) => v.parse(StreamEvent, json);
 
-		const final = await processStreamOutput(stdout, 123, 456, bot, parser);
+		const final = await processStreamOutput({ stdout, sender, parser });
 
 		assertEquals(final, 'hello world');
-		assertSpyCalls(draftSpy, 2);
-		assertSpyCall(draftSpy, 0, { args: [123, 456, 'hello'] });
-		assertSpyCall(draftSpy, 1, { args: [123, 456, 'hello world'] });
+		assertEquals(calls, ['hello', 'hello world']);
 	});
 });
 
@@ -652,6 +653,104 @@ describe('dispatch', () => {
 			'A'.repeat(250),
 			'A'.repeat(250) + 'B'.repeat(250),
 		]);
+
+		assertSpyCall(logStub, 0, { args: ['A'.repeat(250) + 'B'.repeat(250)] });
+	});
+
+	it('streams output for group chat via editMessageText', async () => {
+		const fullId = 'telegram:1_1';
+
+		using _ = stubFiles({
+			'config.json': {
+				channels: { telegram: { token: 'mock-token' } },
+				allowedUsers: [],
+				agent: { name: 'pi', stream: true },
+			},
+			'prompt.txt': 'mocked prompt',
+			'meta.json': {
+				channel: 'telegram',
+				chatId: 123,
+				messageId: 456,
+				chatType: 'group',
+			},
+		});
+
+		const events = [
+			{
+				type: 'message_update',
+				assistantMessageEvent: {
+					type: 'text_delta',
+					delta: 'A'.repeat(250),
+				},
+			},
+			{
+				type: 'message_update',
+				assistantMessageEvent: {
+					type: 'text_delta',
+					delta: 'B'.repeat(250),
+				},
+			},
+			{
+				type: 'message_end',
+				message: {
+					role: 'assistant',
+					content: [
+						{ type: 'text', text: 'A'.repeat(250) + 'B'.repeat(250) },
+					],
+				},
+			},
+		].map((e) => JSON.stringify(e)).map((json) => `${json}\n`);
+
+		const encoder = new TextEncoder();
+		const stdoutStream = new ReadableStream({
+			start(controller) {
+				for (const event of events) {
+					controller.enqueue(encoder.encode(event));
+				}
+				controller.close();
+			},
+		});
+
+		// Seed message via sendMessage
+		using msgSpy = stub(
+			Api.prototype,
+			// deno-lint-ignore no-explicit-any
+			'sendMessage' as any,
+			() => Promise.resolve({ message_id: 999 }),
+		);
+
+		using editSpy = stub(
+			Api.prototype,
+			// deno-lint-ignore no-explicit-any
+			'editMessageText' as any,
+			() => Promise.resolve({}),
+		);
+
+		using cmdStub = stub(
+			Deno,
+			'Command',
+			() =>
+				fakeCommand({}, {
+					stdout: stdoutStream as unknown as Deno.SubprocessReadableStream,
+				}),
+		);
+		using logStub = stub(console, 'log');
+
+		await dispatch(['--id', fullId]);
+
+		assertSpyCalls(cmdStub, 1);
+
+		// Seed message sent with reply
+		assertSpyCalls(msgSpy, 1);
+		assertEquals(msgSpy.calls[0].args[0], 123);
+		assertEquals(msgSpy.calls[0].args[1], '(💬 processing...)');
+
+		// Stream updates via editMessageText (2 deltas trigger edits)
+		assertSpyCalls(editSpy, 2);
+		assertEquals(editSpy.calls[0].args[0], 123);
+		assertEquals(editSpy.calls[0].args[1], 999);
+		assertEquals(editSpy.calls[0].args[2], 'A'.repeat(250));
+		assertEquals(editSpy.calls[1].args[2], 'A'.repeat(250) + 'B'.repeat(250));
 
 		assertSpyCall(logStub, 0, { args: ['A'.repeat(250) + 'B'.repeat(250)] });
 	});
