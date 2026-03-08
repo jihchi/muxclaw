@@ -234,11 +234,9 @@ export function getAgentParser(agentName: AgentName): Parser {
 
 function getAgentCommand({
 	agentName,
-	prompt,
 	stream,
 }: {
 	agentName: AgentName;
-	prompt: string;
 	stream?: boolean;
 }): { cmd: string; args: string[] } {
 	switch (agentName) {
@@ -250,13 +248,12 @@ function getAgentCommand({
 					'--verbose',
 					'--include-partial-messages',
 					'-p',
-					prompt,
 				]
-				: ['-p', prompt];
+				: ['-p'];
 			return { cmd: 'claude', args };
 		}
 		case 'pi': {
-			const args = stream ? ['--mode', 'json', '-p', prompt] : ['-p', prompt];
+			const args = stream ? ['--mode', 'json', '-p'] : ['-p'];
 			return { cmd: 'pi', args };
 		}
 	}
@@ -911,15 +908,20 @@ export async function dispatch(args: string[]): Promise<void> {
 	}
 
 	const stream = config.agent.stream;
-	const agent = getAgentCommand({ agentName, prompt, stream });
+	const agent = getAgentCommand({ agentName, stream });
 
 	const cmd = new Deno.Command(agent.cmd, {
 		args: agent.args,
 		cwd: getWorkspaceDir(config),
-		stdin: 'null',
+		stdin: 'piped',
 		stdout: stream ? 'piped' : 'inherit',
 		stderr: 'inherit',
 	});
+
+	const child = cmd.spawn();
+	const writer = child.stdin.getWriter();
+	await writer.write(new TextEncoder().encode(prompt + '\n'));
+	await writer.close();
 
 	if (stream && meta) {
 		const token = getToken(config);
@@ -961,7 +963,6 @@ export async function dispatch(args: string[]): Promise<void> {
 			sender = createDraftSender({ bot, chatId: meta.chatId, draftId });
 		}
 
-		const child = cmd.spawn();
 		const finalResult = await processStreamOutput({
 			stdout: child.stdout,
 			sender,
@@ -973,7 +974,7 @@ export async function dispatch(args: string[]): Promise<void> {
 			Deno.exit(status.code);
 		}
 	} else {
-		const result = await cmd.output();
+		const result = await child.output();
 		if (!result.success) {
 			Deno.exit(result.code);
 		}
