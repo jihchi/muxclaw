@@ -36,8 +36,8 @@ muxclaw ingress                 muxclaw egress
 
 - [Deno](https://deno.land/) (v2+)
 - [nq](https://github.com/leahneukirchen/nq) — zero-setup Unix job queue
-- A coding agent: either [Pi](https://github.com/mariozechner/pi-coding-agent)
-  or [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
+- A coding agent: either [Pi](https://pi.dev/) or
+  [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
 - A [Telegram Bot Token](https://core.telegram.org/bots#how-do-i-create-a-bot)
 
 ## Setup
