@@ -8,13 +8,18 @@ import {
 import { afterEach, beforeEach, describe, it } from '@std/testing/bdd';
 import { join } from '@std/path';
 import { Api } from 'grammy';
+import * as v from '@valibot/valibot';
 
 import {
 	type Config,
 	createIngressHandler,
 	dispatch,
+	getAgentParser,
 	type IngressContext,
+	type Parser,
 	processJob,
+	processStreamOutput,
+	StreamEvent,
 	type TelegramBot,
 	validateWorkspace,
 } from './cli.ts';
@@ -140,13 +145,95 @@ Usage:
 	);
 });
 
+describe('getAgentParser', () => {
+	it('parses Claude delta', () => {
+		const parser = getAgentParser('claude');
+		const json = {
+			type: 'stream_event',
+			event: {
+				type: 'content_block_delta',
+				delta: { type: 'text_delta', text: 'hello' },
+			},
+		};
+		assertEquals(parser(json), { type: 'delta', text: 'hello' });
+	});
+
+	it('parses Claude final', () => {
+		const parser = getAgentParser('claude');
+		const json = {
+			type: 'result',
+			subtype: 'success',
+			result: 'final',
+		};
+		assertEquals(parser(json), { type: 'final', text: 'final' });
+	});
+
+	it('parses Pi delta', () => {
+		const parser = getAgentParser('pi');
+		const json = {
+			type: 'message_update',
+			assistantMessageEvent: { type: 'text_delta', delta: 'world' },
+		};
+		assertEquals(parser(json), { type: 'delta', text: 'world' });
+	});
+
+	it('parses Pi final', () => {
+		const parser = getAgentParser('pi');
+		const json = {
+			type: 'message_end',
+			message: { role: 'assistant', content: [{ type: 'text', text: 'done' }] },
+		};
+		assertEquals(parser(json), { type: 'final', text: 'done' });
+	});
+});
+
+describe('processStreamOutput', () => {
+	it('handles final flush (hasUnsentDraft)', async () => {
+		const encoder = new TextEncoder();
+		const stdout = new ReadableStream({
+			start(controller) {
+				// Delta 1: Will trigger immediately because lastSentAt = 0
+				controller.enqueue(
+					encoder.encode(
+						JSON.stringify({ type: 'delta', text: 'hello' }) + '\n',
+					),
+				);
+				// Delta 2: Won't trigger sync because < 500 chars and < 500ms elapsed since Delta 1
+				controller.enqueue(
+					encoder.encode(
+						JSON.stringify({ type: 'delta', text: ' world' }) + '\n',
+					),
+				);
+				controller.close();
+			},
+		});
+
+		const bot = createBot();
+
+		using draftSpy = stub(
+			bot.api,
+			'sendMessageDraft',
+			() => Promise.resolve(true),
+		);
+
+		const parser: Parser = (json: unknown) => v.parse(StreamEvent, json);
+
+		const final = await processStreamOutput(stdout, 123, 456, bot, parser);
+
+		assertEquals(final, 'hello world');
+		assertSpyCalls(draftSpy, 2);
+		assertSpyCall(draftSpy, 0, { args: [123, 456, 'hello'] });
+		assertSpyCall(draftSpy, 1, { args: [123, 456, 'hello world'] });
+	});
+});
+
 describe('validateWorkspace', () => {
 	it('passes for existing directory', async () => {
 		const config: Config = {
 			channels: { telegram: { token: 'mock' } },
 			allowedUsers: [],
 			workspace: Deno.cwd(),
-			agent: { name: 'claude' },
+			agent: { name: 'pi', stream: false },
 		};
 		await validateWorkspace(config);
 	});
@@ -156,7 +243,7 @@ describe('validateWorkspace', () => {
 			channels: { telegram: { token: 'mock' } },
 			allowedUsers: [],
 			workspace: '/non/existent/path',
-			agent: { name: 'claude' },
+			agent: { name: 'pi', stream: false },
 		};
 		using exitStub = stubDenoExit();
 		using errorStub = stub(console, 'error');
@@ -187,7 +274,7 @@ describe('validateWorkspace', () => {
 			channels: { telegram: { token: 'mock' } },
 			allowedUsers: [],
 			workspace: tempFile.path,
-			agent: { name: 'claude' },
+			agent: { name: 'pi', stream: false },
 		};
 		using exitStub = stubDenoExit();
 		using errorStub = stub(console, 'error');
@@ -209,7 +296,7 @@ describe('validateWorkspace', () => {
 });
 
 describe('dispatch', () => {
-	it('calls claude with joined args', async () => {
+	it('calls pi with joined args', async () => {
 		using _ = stubFiles({
 			'config.json': {
 				channels: { telegram: { token: 'mock-token' } },
@@ -222,7 +309,7 @@ describe('dispatch', () => {
 		await dispatch(['hello', 'world']);
 
 		assertSpyCall(cmdStub, 0, {
-			args: ['claude', {
+			args: ['pi', {
 				args: ['-p', 'hello world'],
 				cwd: Deno.cwd(),
 				stdin: 'null',
@@ -239,6 +326,7 @@ describe('dispatch', () => {
 			'config.json': {
 				channels: { telegram: { token: 'mock-token' } },
 				allowedUsers: [],
+				agent: { name: 'pi', stream: true },
 			},
 			'prompt.txt': 'mocked prompt',
 			'meta.json': {
@@ -281,12 +369,10 @@ describe('dispatch', () => {
 		assertEquals(draftSpy.calls[0].args[2], '(💬 processing...)');
 
 		assertSpyCall(cmdStub, 0, {
-			args: ['claude', {
+			args: ['pi', {
 				args: [
-					'--output-format',
-					'stream-json',
-					'--verbose',
-					'--include-partial-messages',
+					'--mode',
+					'json',
 					'-p',
 					'mocked prompt',
 				],
@@ -344,13 +430,14 @@ describe('dispatch', () => {
 		assertSpyCalls(exitStub, 1);
 	});
 
-	it('streams output when meta.json is present with telegram channel', async () => {
+	it('streams output for Claude', async () => {
 		const fullId = 'telegram:1_1';
 
 		using _ = stubFiles({
 			'config.json': {
 				channels: { telegram: { token: 'mock-token' } },
 				allowedUsers: [],
+				agent: { name: 'claude', stream: true },
 			},
 			'prompt.txt': 'mocked prompt',
 			'meta.json': {
@@ -445,6 +532,105 @@ describe('dispatch', () => {
 		assertSpyCall(logStub, 0, { args: ['A'.repeat(250) + 'B'.repeat(250)] });
 	});
 
+	it('streams output for Pi', async () => {
+		const fullId = 'telegram:1_1';
+
+		using _ = stubFiles({
+			'config.json': {
+				channels: { telegram: { token: 'mock-token' } },
+				allowedUsers: [],
+				agent: { name: 'pi', stream: true },
+			},
+			'prompt.txt': 'mocked prompt',
+			'meta.json': {
+				channel: 'telegram',
+				chatId: 123,
+				messageId: 456,
+			},
+		});
+
+		const events = [
+			{
+				type: 'message_update',
+				assistantMessageEvent: {
+					type: 'text_delta',
+					delta: 'A'.repeat(250),
+				},
+			},
+			{
+				type: 'message_update',
+				assistantMessageEvent: {
+					type: 'text_delta',
+					delta: 'B'.repeat(250),
+				},
+			},
+			{
+				type: 'message_end',
+				message: {
+					role: 'assistant',
+					content: [
+						{ type: 'text', text: 'A'.repeat(250) + 'B'.repeat(250) },
+					],
+				},
+			},
+		].map((e) => JSON.stringify(e)).map((json) => `${json}\n`);
+
+		const encoder = new TextEncoder();
+		const stdoutStream = new ReadableStream({
+			start(controller) {
+				for (const event of events) {
+					controller.enqueue(encoder.encode(event));
+				}
+				controller.close();
+			},
+		});
+
+		using draftSpy = stub(
+			Api.prototype,
+			'sendMessageDraft',
+			() => Promise.resolve(true),
+		);
+
+		using cmdStub = stub(
+			Deno,
+			'Command',
+			() =>
+				fakeCommand({}, {
+					stdout: stdoutStream as unknown as Deno.SubprocessReadableStream,
+				}),
+		);
+		using logStub = stub(console, 'log');
+
+		await dispatch(['--id', fullId]);
+
+		assertSpyCall(cmdStub, 0, {
+			args: ['pi', {
+				args: [
+					'--mode',
+					'json',
+					'-p',
+					'mocked prompt',
+				],
+				cwd: Deno.cwd(),
+				stdin: 'null',
+				stdout: 'piped',
+				stderr: 'inherit',
+			}],
+		});
+
+		// 1 initial draft "...💬" + 2 drafts during streaming (total 3)
+		assertSpyCalls(draftSpy, 3);
+
+		const draftTexts = draftSpy.calls.map((c) => c.args[2]);
+		assertEquals(draftTexts, [
+			'(💬 processing...)',
+			'A'.repeat(250),
+			'A'.repeat(250) + 'B'.repeat(250),
+		]);
+
+		assertSpyCall(logStub, 0, { args: ['A'.repeat(250) + 'B'.repeat(250)] });
+	});
+
 	it('shows error if config file is not found', async () => {
 		using readStub = stub(
 			Deno,
@@ -493,6 +679,37 @@ describe('dispatch', () => {
 		});
 
 		assertSpyCalls(exitStub, 1);
+	});
+
+	it('does NOT stream for Telegram if stream is false', async () => {
+		using _ = stubFiles({
+			'config.json': {
+				channels: { telegram: { token: 'mock-token' } },
+				allowedUsers: [],
+				agent: { name: 'pi', stream: false },
+			},
+			'prompt.txt': 'mocked prompt',
+			'meta.json': {
+				channel: 'telegram',
+				chatId: 123,
+				messageId: 456,
+			},
+		});
+
+		using cmdStub = stub(Deno, 'Command', () => fakeCommand());
+		using _exitStub = stubDenoExit();
+
+		await dispatch(['--id', 'telegram:1_1']);
+
+		assertSpyCall(cmdStub, 0, {
+			args: ['pi', {
+				args: ['-p', 'mocked prompt'],
+				cwd: Deno.cwd(),
+				stdin: 'null',
+				stdout: 'inherit',
+				stderr: 'inherit',
+			}],
+		});
 	});
 });
 

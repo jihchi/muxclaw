@@ -36,7 +36,8 @@ muxclaw ingress                 muxclaw egress
 
 - [Deno](https://deno.land/) (v2+)
 - [nq](https://github.com/leahneukirchen/nq) — zero-setup Unix job queue
-- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) (`claude`)
+- A coding agent: either [Pi](https://github.com/mariozechner/pi-coding-agent)
+  or [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
 - A [Telegram Bot Token](https://core.telegram.org/bots#how-do-i-create-a-bot)
 
 ## Setup
@@ -55,7 +56,8 @@ Create `~/.config/muxclaw/config.json` with your bot token and allowed users:
 	],
 	"workspace": "/path/to/your/project",
 	"agent": {
-		"name": "claude"
+		"name": "pi",
+		"stream": true
 	}
 }
 ```
@@ -111,7 +113,7 @@ Config and state follow the
 
 ## Design Goals
 
-Channels (e.g., Telegram) and coding agents (e.g., Claude Code) should be
+Channels (e.g., Telegram) and coding agents (e.g., Pi, Claude) should be
 configurable and swappable. The architecture intentionally decouples ingress,
 dispatch, and egress so that adding a new channel or agent doesn't require
 changes to the other components.
@@ -126,14 +128,10 @@ deno test -P --allow-import
 
 ## Docker
 
-Pull the image and run the container (mount `claude` CLI, its auth, your config,
-and workspace):
+Pull the image and run the container (mount your config and workspace):
 
 ```sh
 docker run -it --rm \
-  -v $(which claude):/usr/local/bin/claude \
-  -v ~/.claude:/home/deno/.claude \
-  -v ~/.claude.json:/home/deno/.claude.json \
   -v ~/.config/muxclaw:/home/deno/.config/muxclaw \
   -v $(pwd)/workspace:/workspace \
   ghcr.io/jihchi/muxclaw

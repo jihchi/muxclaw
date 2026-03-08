@@ -22,8 +22,9 @@ AI assistant multiplexer that connects messaging channels to coding agents via
   `~/.local/share/muxclaw/messages/<channel>/<chatId>_<messageId>/`.
 - **Job Mapping:** A temporary symlink `~/.local/share/muxclaw/,HEXTIME.PID.d`
   connects the `nq` job to its message directory.
-- **Agents:** Configurable via `~/.config/muxclaw/config.json`. Default agent is
-  `claude -p`.
+- **Agents:** Supported agents are `pi` and `claude`, configurable via
+  `~/.config/muxclaw/config.json`. Default agent is `pi`. Real-time response
+  streaming is supported for both.
 
 ## Code Style & Conventions
 
