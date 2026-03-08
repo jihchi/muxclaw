@@ -243,13 +243,15 @@ function getAgentCommand({
 		case 'claude': {
 			const args = stream
 				? [
+					'--add-dir',
+					DATA_DIR,
 					'--output-format',
 					'stream-json',
 					'--verbose',
 					'--include-partial-messages',
 					'-p',
 				]
-				: ['-p'];
+				: ['--add-dir', DATA_DIR, '-p'];
 			return { cmd: 'claude', args };
 		}
 		case 'pi': {

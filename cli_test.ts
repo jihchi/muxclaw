@@ -535,6 +535,8 @@ describe('dispatch', () => {
 		assertSpyCall(cmdStub, 0, {
 			args: ['claude', {
 				args: [
+					'--add-dir',
+					DATA_DIR,
 					'--output-format',
 					'stream-json',
 					'--verbose',

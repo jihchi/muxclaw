@@ -24,7 +24,8 @@ AI assistant multiplexer that connects messaging channels to coding agents via
   connects the `nq` job to its message directory.
 - **Agents:** Supported agents are `pi` and `claude`, configurable via
   `~/.config/muxclaw/config.json`. Default agent is `pi`. Real-time response
-  streaming is supported for both.
+  streaming is supported for both. For `claude`, `muxclaw` automatically passes
+  `--add-dir` to allow access to the message attachments directory.
 
 ## Code Style & Conventions
 
