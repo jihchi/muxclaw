@@ -4,7 +4,7 @@ import { basename, dirname, join } from '@std/path';
 import { TextLineStream } from '@std/streams/text-line-stream';
 import * as v from '@valibot/valibot';
 
-const AgentName = v.picklist(['claude']);
+const AgentName = v.picklist(['claude', 'pi']);
 type AgentName = v.InferOutput<typeof AgentName>;
 
 const Config = v.object({
@@ -13,11 +13,64 @@ const Config = v.object({
 	}),
 	allowedUsers: v.array(v.object({ userId: v.string() })),
 	workspace: v.optional(v.string()),
-	agent: v.optional(v.object({ name: v.optional(AgentName, 'claude') }), {
-		name: 'claude',
-	}),
+	agent: v.optional(
+		v.object({
+			name: v.optional(AgentName, 'pi'),
+			stream: v.optional(v.boolean(), false),
+		}),
+		{
+			name: 'pi',
+			stream: false,
+		},
+	),
 });
 export type Config = v.InferOutput<typeof Config>;
+
+export const StreamEvent = v.union([
+	v.object({ type: v.literal('delta'), text: v.string() }),
+	v.object({ type: v.literal('final'), text: v.string() }),
+]);
+export type StreamEvent = v.InferOutput<typeof StreamEvent>;
+
+export type Parser = (json: unknown) => StreamEvent | undefined;
+
+const ClaudeStreamEvent = v.union([
+	v.object({
+		type: v.literal('result'),
+		subtype: v.literal('success'),
+		result: v.string(),
+	}),
+	v.object({
+		type: v.literal('stream_event'),
+		event: v.object({
+			type: v.literal('content_block_delta'),
+			delta: v.object({
+				type: v.literal('text_delta'),
+				text: v.string(),
+			}),
+		}),
+	}),
+]);
+
+const PiStreamEvent = v.union([
+	v.object({
+		type: v.literal('message_end'),
+		message: v.object({
+			role: v.literal('assistant'),
+			content: v.array(v.object({
+				type: v.string(),
+				text: v.optional(v.string()),
+			})),
+		}),
+	}),
+	v.object({
+		type: v.literal('message_update'),
+		assistantMessageEvent: v.object({
+			type: v.literal('text_delta'),
+			delta: v.string(),
+		}),
+	}),
+]);
 
 const JobMeta = v.object({
 	channel: v.literal('telegram'),
@@ -98,7 +151,7 @@ async function loadConfig(): Promise<Config> {
 		return {
 			channels: { telegram: { token: '' } },
 			allowedUsers: [],
-			agent: { name: 'claude' },
+			agent: { name: 'pi', stream: false },
 		};
 	}
 }
@@ -130,6 +183,48 @@ export async function validateWorkspace(config: Config): Promise<void> {
 	}
 }
 
+function parseClaude(json: unknown): StreamEvent | undefined {
+	const result = v.safeParse(ClaudeStreamEvent, json);
+	if (!result.success) return;
+
+	const d = result.output;
+
+	if (d.type === 'result') {
+		return { type: 'final', text: d.result };
+	}
+
+	if (d.type === 'stream_event') {
+		return { type: 'delta', text: d.event.delta.text };
+	}
+}
+
+function parsePi(json: unknown): StreamEvent | undefined {
+	const result = v.safeParse(PiStreamEvent, json);
+	if (!result.success) return;
+
+	const d = result.output;
+
+	if (d.type === 'message_end') {
+		const lastText = d.message.content.findLast((c) => c.type === 'text');
+		if (lastText?.text) {
+			return { type: 'final', text: lastText.text };
+		}
+	}
+
+	if (d.type === 'message_update') {
+		return { type: 'delta', text: d.assistantMessageEvent.delta };
+	}
+}
+
+export function getAgentParser(agentName: AgentName): Parser {
+	switch (agentName) {
+		case 'claude':
+			return parseClaude;
+		case 'pi':
+			return parsePi;
+	}
+}
+
 function getAgentCommand({
 	agentName,
 	prompt,
@@ -139,22 +234,25 @@ function getAgentCommand({
 	prompt: string;
 	stream?: boolean;
 }): { cmd: string; args: string[] } {
-	// Exhaustive check — if more agents are added, TypeScript will error here
-	const _: 'claude' = agentName;
-	void _;
-
-	const args = stream
-		? [
-			'--output-format',
-			'stream-json',
-			'--verbose',
-			'--include-partial-messages',
-			'-p',
-			prompt,
-		]
-		: ['-p', prompt];
-
-	return { cmd: 'claude', args };
+	switch (agentName) {
+		case 'claude': {
+			const args = stream
+				? [
+					'--output-format',
+					'stream-json',
+					'--verbose',
+					'--include-partial-messages',
+					'-p',
+					prompt,
+				]
+				: ['-p', prompt];
+			return { cmd: 'claude', args };
+		}
+		case 'pi': {
+			const args = stream ? ['--mode', 'json', '-p', prompt] : ['-p', prompt];
+			return { cmd: 'pi', args };
+		}
+	}
 }
 
 function logStartup(label: string): void {
@@ -626,66 +724,62 @@ export async function processStreamOutput(
 	chatId: number,
 	draftId: number,
 	bot: TelegramBot,
+	parser: Parser,
 ): Promise<string> {
 	let pile = '';
 	let final = '';
 	let lastSentAt = 0;
 	let lastSentLen = 0;
-	let dirty = false;
+	let hasUnsentDraft = false;
 
 	const stream = stdout
 		.pipeThrough(new TextDecoderStream())
 		.pipeThrough(new TextLineStream());
 
 	for await (const line of stream) {
-		if (!line.length || !line.trim()) {
-			continue;
-		}
+		const trimmed = line.trim();
+		if (!trimmed) continue;
 
 		try {
-			const json = JSON.parse(line);
+			const json = JSON.parse(trimmed);
+			const event = parser(json);
+			if (!event) continue;
 
-			if (json.type === 'result' && json.subtype === 'success') {
-				final = json.result;
+			if (event.type === 'final') {
+				final = event.text;
 				continue;
 			}
 
-			if (json.type !== 'stream_event') {
-				continue;
-			}
+			if (event.type === 'delta') {
+				pile += event.text;
+				hasUnsentDraft = true;
 
-			const event = json.event;
+				const now = Date.now();
+				const elapsed = now - lastSentAt >= THROTTLE_MS;
+				const grown = pile.length - lastSentLen >= THROTTLE_CHARS;
 
-			if (
-				event.type !== 'content_block_delta' ||
-				event.delta?.type !== 'text_delta'
-			) {
-				continue;
-			}
-
-			pile += event.delta.text;
-			dirty = true;
-
-			const now = Date.now();
-			const elapsed = now - lastSentAt >= THROTTLE_MS;
-			const grown = pile.length - lastSentLen >= THROTTLE_CHARS;
-
-			if (elapsed || grown) {
-				try {
-					await bot.api.sendMessageDraft(chatId, draftId, pile);
-					lastSentAt = now;
-					lastSentLen = pile.length;
-					dirty = false;
-				} catch (err) {
-					console.error('[dispatch] sendMessageDraft failed:', err);
+				if (elapsed || grown) {
+					try {
+						await bot.api.sendMessageDraft(chatId, draftId, pile);
+						lastSentAt = now;
+						lastSentLen = pile.length;
+						hasUnsentDraft = false;
+					} catch (err) {
+						console.error('[dispatch] sendMessageDraft failed:', err);
+					}
 				}
 			}
 		} catch (err) {
-			console.error('[dispatch] Failed to parse JSON:', err, '. Line:', line);
+			console.error(
+				'[dispatch] Failed to parse JSON or process event:',
+				err,
+				'. Line:',
+				line,
+			);
 		}
 	}
 
-	if (dirty) {
+	if (hasUnsentDraft) {
 		try {
 			await bot.api.sendMessageDraft(chatId, draftId, pile);
 		} catch (err) {
@@ -747,7 +841,7 @@ export async function dispatch(args: string[]): Promise<void> {
 		}
 	}
 
-	const stream = meta?.channel === 'telegram';
+	const stream = config.agent.stream;
 	const agent = getAgentCommand({ agentName, prompt, stream });
 
 	const cmd = new Deno.Command(agent.cmd, {
@@ -780,6 +874,7 @@ export async function dispatch(args: string[]): Promise<void> {
 			meta.chatId,
 			draftId,
 			bot,
+			getAgentParser(agentName),
 		);
 		console.log(finalResult);
 		const status = await child.status;
