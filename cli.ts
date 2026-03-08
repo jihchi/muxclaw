@@ -73,11 +73,14 @@ const PiStreamEvent = v.union([
 	}),
 ]);
 
+const ChatType = v.picklist(['private', 'group', 'supergroup']);
+
 const JobMeta = v.object({
 	channel: v.literal('telegram'),
 	chatId: v.number(),
 	messageId: v.number(),
 	userId: v.optional(v.number()),
+	chatType: v.optional(ChatType, 'private'),
 });
 type JobMeta = v.InferOutput<typeof JobMeta>;
 
@@ -85,6 +88,7 @@ export interface TelegramBot extends Pick<Bot, 'token'> {
 	api: {
 		[
 			K in
+				| 'editMessageText'
 				| 'getFile'
 				| 'sendChatAction'
 				| 'sendMessage'
@@ -133,6 +137,7 @@ const QUEUE_COMPLETED_DIR = join(QUEUE_DIR, 'completed');
 const QUEUE_FAILED_DIR = join(QUEUE_DIR, 'failed');
 
 const THROTTLE_MS = 500;
+const THROTTLE_MS_GROUP = 3000;
 const THROTTLE_CHARS = 500;
 const TELEGRAM_MAX_MESSAGE_LENGTH = 4096;
 
@@ -522,6 +527,7 @@ export function createIngressHandler(
 				chatId,
 				messageId,
 				userId,
+				chatType: v.parse(v.optional(ChatType, 'private'), ctx.chat?.type),
 			};
 
 			await Deno.writeTextFile(
@@ -739,13 +745,56 @@ export function truncateDraft(text: string): string {
 	return '...' + text.slice(-(TELEGRAM_MAX_MESSAGE_LENGTH - 3));
 }
 
-export async function processStreamOutput(
-	stdout: ReadableStream<Uint8Array>,
-	chatId: number,
-	draftId: number,
-	bot: TelegramBot,
-	parser: Parser,
-): Promise<string> {
+export interface StreamSender {
+	update(text: string): Promise<void>;
+	throttleMs: number;
+}
+
+export function createDraftSender(
+	{
+		bot,
+		chatId,
+		draftId,
+	}: {
+		bot: TelegramBot;
+		chatId: number;
+		draftId: number;
+	},
+): StreamSender {
+	return {
+		throttleMs: THROTTLE_MS,
+		async update(text: string) {
+			await bot.api.sendMessageDraft(chatId, draftId, text);
+		},
+	};
+}
+
+export function createEditSender({
+	bot,
+	chatId,
+	messageId,
+}: {
+	bot: TelegramBot;
+	chatId: number;
+	messageId: number;
+}): StreamSender {
+	return {
+		throttleMs: THROTTLE_MS_GROUP,
+		async update(text: string) {
+			await bot.api.editMessageText(chatId, messageId, text);
+		},
+	};
+}
+
+export async function processStreamOutput({
+	stdout,
+	sender,
+	parser,
+}: {
+	stdout: ReadableStream<Uint8Array>;
+	sender: StreamSender;
+	parser: Parser;
+}): Promise<string> {
 	let pile = '';
 	let final = '';
 	let lastSentAt = 0;
@@ -775,21 +824,17 @@ export async function processStreamOutput(
 				hasUnsentDraft = true;
 
 				const now = Date.now();
-				const elapsed = now - lastSentAt >= THROTTLE_MS;
+				const elapsed = now - lastSentAt >= sender.throttleMs;
 				const grown = pile.length - lastSentLen >= THROTTLE_CHARS;
 
 				if (elapsed || grown) {
 					try {
-						await bot.api.sendMessageDraft(
-							chatId,
-							draftId,
-							truncateDraft(pile),
-						);
+						await sender.update(truncateDraft(pile));
 						lastSentAt = now;
 						lastSentLen = pile.length;
 						hasUnsentDraft = false;
 					} catch (err) {
-						console.error('[dispatch] sendMessageDraft failed:', err);
+						console.error('[dispatch] stream update failed:', err);
 					}
 				}
 			}
@@ -805,9 +850,9 @@ export async function processStreamOutput(
 
 	if (hasUnsentDraft) {
 		try {
-			await bot.api.sendMessageDraft(chatId, draftId, truncateDraft(pile));
+			await sender.update(truncateDraft(pile));
 		} catch (err) {
-			console.error('[dispatch] sendMessageDraft failed:', err);
+			console.error('[dispatch] stream update failed:', err);
 		}
 	}
 
@@ -880,27 +925,48 @@ export async function dispatch(args: string[]): Promise<void> {
 		const token = getToken(config);
 		const bot = new Bot(token);
 		bot.api.config.use(autoRetry());
-		const draftId = Date.now();
+		const isGroup = meta.chatType === 'group' || meta.chatType === 'supergroup';
 
-		// Send initial draft to show we are working
-		try {
-			await bot.api.sendMessageDraft(
+		let sender: StreamSender;
+		if (isGroup) {
+			// Groups don't support sendMessageDraft; send a seed message and
+			// update it via editMessageText with a longer throttle.
+			const seed = await bot.api.sendMessage(
 				meta.chatId,
-				draftId,
 				'(💬 processing...)',
+				{
+					reply_parameters: {
+						message_id: meta.messageId,
+						allow_sending_without_reply: true,
+					},
+				},
 			);
-		} catch (err) {
-			console.error('[dispatch] initial sendMessageDraft failed:', err);
+			sender = createEditSender({
+				bot,
+				chatId: meta.chatId,
+				messageId: seed.message_id,
+			});
+		} else {
+			const draftId = Date.now();
+			// Send initial draft to show we are working
+			try {
+				await bot.api.sendMessageDraft(
+					meta.chatId,
+					draftId,
+					'(💬 processing...)',
+				);
+			} catch (err) {
+				console.error('[dispatch] initial sendMessageDraft failed:', err);
+			}
+			sender = createDraftSender({ bot, chatId: meta.chatId, draftId });
 		}
 
 		const child = cmd.spawn();
-		const finalResult = await processStreamOutput(
-			child.stdout,
-			meta.chatId,
-			draftId,
-			bot,
-			getAgentParser(agentName),
-		);
+		const finalResult = await processStreamOutput({
+			stdout: child.stdout,
+			sender,
+			parser: getAgentParser(agentName),
+		});
 		console.log(finalResult);
 		const status = await child.status;
 		if (!status.success) {
