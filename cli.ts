@@ -1,4 +1,5 @@
 import { type Api, Bot, type Context } from 'grammy';
+import { autoRetry } from 'grammy_auto_retry';
 import type { Message } from 'grammy/types';
 import { basename, dirname, join } from '@std/path';
 import { TextLineStream } from '@std/streams/text-line-stream';
@@ -548,6 +549,7 @@ export async function ingress(): Promise<void> {
 	}
 
 	const bot = new Bot(token);
+	bot.api.config.use(autoRetry());
 
 	const handleMessage = createIngressHandler(bot, allowedIds);
 
@@ -569,6 +571,7 @@ export async function egress(): Promise<void> {
 	const config = await loadConfig();
 	const token = getToken(config);
 	const bot = new Bot(token);
+	bot.api.config.use(autoRetry());
 
 	logStartup('egress');
 
@@ -855,6 +858,7 @@ export async function dispatch(args: string[]): Promise<void> {
 	if (stream && meta) {
 		const token = getToken(config);
 		const bot = new Bot(token);
+		bot.api.config.use(autoRetry());
 		const draftId = Date.now();
 
 		// Send initial draft to show we are working
