@@ -72,6 +72,14 @@ function fakeCommand(
 		},
 		spawn: () => ({
 			status: Promise.resolve({ success: true, code: 0, signal: null }),
+			output: () =>
+				Promise.resolve({
+					success: true,
+					code: 0,
+					signal: null,
+					stdout: new Uint8Array(),
+					stderr: new Uint8Array(),
+				}),
 			stdout: new ReadableStream(),
 			stderr: new ReadableStream(),
 			stdin: new WritableStream(),
@@ -336,9 +344,9 @@ describe('dispatch', () => {
 
 		assertSpyCall(cmdStub, 0, {
 			args: ['pi', {
-				args: ['-p', 'hello world'],
+				args: ['-p'],
 				cwd: Deno.cwd(),
-				stdin: 'null',
+				stdin: 'piped',
 				stdout: 'inherit',
 				stderr: 'inherit',
 			}],
@@ -400,10 +408,9 @@ describe('dispatch', () => {
 					'--mode',
 					'json',
 					'-p',
-					'mocked prompt',
 				],
 				cwd: Deno.cwd(),
-				stdin: 'null',
+				stdin: 'piped',
 				stdout: 'piped',
 				stderr: 'inherit',
 			}],
@@ -533,10 +540,9 @@ describe('dispatch', () => {
 					'--verbose',
 					'--include-partial-messages',
 					'-p',
-					'mocked prompt',
 				],
 				cwd: Deno.cwd(),
-				stdin: 'null',
+				stdin: 'piped',
 				stdout: 'piped',
 				stderr: 'inherit',
 			}],
@@ -635,10 +641,9 @@ describe('dispatch', () => {
 					'--mode',
 					'json',
 					'-p',
-					'mocked prompt',
 				],
 				cwd: Deno.cwd(),
-				stdin: 'null',
+				stdin: 'piped',
 				stdout: 'piped',
 				stderr: 'inherit',
 			}],
@@ -827,9 +832,9 @@ describe('dispatch', () => {
 
 		assertSpyCall(cmdStub, 0, {
 			args: ['pi', {
-				args: ['-p', 'mocked prompt'],
+				args: ['-p'],
 				cwd: Deno.cwd(),
-				stdin: 'null',
+				stdin: 'piped',
 				stdout: 'inherit',
 				stderr: 'inherit',
 			}],
