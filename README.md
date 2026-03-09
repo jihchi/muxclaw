@@ -4,6 +4,15 @@ A versatile AI assistant with a simple, elegant architecture — multiplexes
 messaging channels to coding agents via
 [`nq`](https://github.com/leahneukirchen/nq), a zero-setup Unix job queue.
 
+![Screenshot](./assets/screenshot.jpg)
+
+<details>
+<summary>Watch Screencast</summary>
+
+![Screencast](./assets/screencast.gif)
+
+</details>
+
 Three independent processes cooperate via the filesystem:
 
 ```
