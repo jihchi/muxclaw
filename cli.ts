@@ -74,6 +74,11 @@ const PiStreamEvent = v.union([
 ]);
 
 const ChatType = v.picklist(['private', 'group', 'supergroup']);
+type ChatType = v.InferOutput<typeof ChatType>;
+
+export function isGroupChat(chatType: ChatType): boolean {
+	return chatType === 'group' || chatType === 'supergroup';
+}
 
 const JobMeta = v.object({
 	channel: v.literal('telegram'),
@@ -694,21 +699,30 @@ export async function processJob(
 	const metaPath = getJobMeta(jobName);
 	const meta = v.parse(JobMeta, JSON.parse(await Deno.readTextFile(metaPath)));
 
-	const raw = (await Deno.readTextFile(logPath)).trim();
-	const firstNl = raw.indexOf('\n');
-	const lastNl = raw.lastIndexOf('\n');
-	const output = firstNl !== -1 && firstNl !== lastNl
-		? raw.slice(firstNl + 1, lastNl).trim()
-		: raw;
+	const config = await loadConfig();
+	const alreadyStreamed = config.agent.stream && isGroupChat(meta.chatType);
 
-	if (!output) {
-		console.log(`[egress] Empty output for ${jobName}, skipping`);
-		return;
+	if (alreadyStreamed) {
+		console.log(
+			`[egress] Skipping send for ${jobName} (already streamed to group)`,
+		);
+	} else {
+		const raw = (await Deno.readTextFile(logPath)).trim();
+		const firstNl = raw.indexOf('\n');
+		const lastNl = raw.lastIndexOf('\n');
+		const output = firstNl !== -1 && firstNl !== lastNl
+			? raw.slice(firstNl + 1, lastNl).trim()
+			: raw;
+
+		if (!output) {
+			console.log(`[egress] Empty output for ${jobName}, skipping`);
+			return;
+		}
+
+		await bot.api.sendChatAction(meta.chatId, 'typing');
+
+		await sendSplitMessage(bot, meta.chatId, output, meta.messageId);
 	}
-
-	await bot.api.sendChatAction(meta.chatId, 'typing');
-
-	await sendSplitMessage(bot, meta.chatId, output, meta.messageId);
 
 	// Move job output file into .d/ directory (marks as processed)
 	await Deno.rename(logPath, join(jobDir, jobName));
@@ -929,7 +943,7 @@ export async function dispatch(args: string[]): Promise<void> {
 		const token = getToken(config);
 		const bot = new Bot(token);
 		bot.api.config.use(autoRetry());
-		const isGroup = meta.chatType === 'group' || meta.chatType === 'supergroup';
+		const isGroup = isGroupChat(meta.chatType);
 
 		let sender: StreamSender;
 		if (isGroup) {
