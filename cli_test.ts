@@ -21,6 +21,7 @@ import {
 	dispatch,
 	getAgentParser,
 	type IngressContext,
+	isGroupChat,
 	type Parser,
 	processJob,
 	processStreamOutput,
@@ -865,6 +866,11 @@ describe('processJob', () => {
 		);
 		using msgSpy = stub(bot.api, 'sendMessage', () => Promise.resolve({}));
 		using _ = stubFiles({
+			'config.json': {
+				channels: { telegram: { token: 'mock-token' } },
+				allowedUsers: [],
+				agent: { name: 'pi', stream: false },
+			},
 			'meta.json': {
 				channel: 'telegram',
 				chatId: 123,
@@ -968,6 +974,11 @@ HTML tags should be escaped: <del>Deleted text</del>
 		const longOutput = 'A'.repeat(4000) + '\n' + 'B'.repeat(1000);
 
 		using _ = stubFiles({
+			'config.json': {
+				channels: { telegram: { token: 'mock-token' } },
+				allowedUsers: [],
+				agent: { name: 'pi', stream: false },
+			},
 			'meta.json': {
 				channel: 'telegram',
 				chatId: 123,
@@ -975,10 +986,22 @@ HTML tags should be escaped: <del>Deleted text</del>
 			},
 			',job': longOutput,
 		});
-		stub(Deno, 'rename', () => Promise.resolve());
-		stub(Deno, 'lstat', () => Promise.reject(new Deno.errors.NotFound()));
+		using renameStub = stub(Deno, 'rename', () => Promise.resolve());
+		using lstatStub = stub(
+			Deno,
+			'lstat',
+			() => Promise.reject(new Deno.errors.NotFound()),
+		);
 
 		await processJob('/mock/dir', ',job', bot);
+
+		assertSpyCall(lstatStub, 0, {
+			args: [join(DATA_DIR, ',job.d')],
+		});
+
+		assertSpyCall(renameStub, 0, {
+			args: ['/mock/dir/,job', join(DATA_DIR, ',job.d', ',job')],
+		});
 
 		assertSpyCall(msgSpy, 0, {
 			args: [
@@ -1007,6 +1030,203 @@ HTML tags should be escaped: <del>Deleted text</del>
 		});
 
 		assertSpyCalls(msgSpy, 2);
+	});
+
+	it('skips sending for streamed group chat', async () => {
+		const bot = createBot();
+
+		using actionSpy = stub(
+			bot.api,
+			'sendChatAction',
+			() => Promise.resolve(true),
+		);
+		using msgSpy = stub(bot.api, 'sendMessage', () => Promise.resolve({}));
+		using _ = stubFiles({
+			'config.json': {
+				channels: { telegram: { token: 'mock-token' } },
+				allowedUsers: [],
+				agent: { name: 'pi', stream: true },
+			},
+			'meta.json': {
+				channel: 'telegram',
+				chatId: 123,
+				messageId: 456,
+				chatType: 'group',
+			},
+			',job': 'first line\nsome output\nlast line',
+		});
+		using renameStub = stub(Deno, 'rename', () => Promise.resolve());
+		using lstatStub = stub(
+			Deno,
+			'lstat',
+			() => Promise.reject(new Deno.errors.NotFound()),
+		);
+
+		await processJob('/mock/dir', ',job', bot);
+
+		// Should NOT send any message or action
+		assertSpyCalls(actionSpy, 0);
+		assertSpyCalls(msgSpy, 0);
+
+		// Should still do cleanup (rename)
+		assertSpyCall(renameStub, 0, {
+			args: ['/mock/dir/,job', join(DATA_DIR, ',job.d', ',job')],
+		});
+
+		assertSpyCall(lstatStub, 0, {
+			args: [join(DATA_DIR, ',job.d')],
+		});
+	});
+
+	it('skips sending for streamed supergroup chat', async () => {
+		const bot = createBot();
+
+		using actionSpy = stub(
+			bot.api,
+			'sendChatAction',
+			() => Promise.resolve(true),
+		);
+		using msgSpy = stub(bot.api, 'sendMessage', () => Promise.resolve({}));
+		using _ = stubFiles({
+			'config.json': {
+				channels: { telegram: { token: 'mock-token' } },
+				allowedUsers: [],
+				agent: { name: 'pi', stream: true },
+			},
+			'meta.json': {
+				channel: 'telegram',
+				chatId: 123,
+				messageId: 456,
+				chatType: 'supergroup',
+			},
+			',job': 'first line\nsome output\nlast line',
+		});
+		using renameStub = stub(Deno, 'rename', () => Promise.resolve());
+		using lstatStub = stub(
+			Deno,
+			'lstat',
+			() => Promise.reject(new Deno.errors.NotFound()),
+		);
+
+		await processJob('/mock/dir', ',job', bot);
+
+		assertSpyCalls(actionSpy, 0);
+		assertSpyCalls(msgSpy, 0);
+
+		assertSpyCall(renameStub, 0, {
+			args: ['/mock/dir/,job', join(DATA_DIR, ',job.d', ',job')],
+		});
+
+		assertSpyCall(lstatStub, 0, {
+			args: [join(DATA_DIR, ',job.d')],
+		});
+	});
+
+	it('sends normally for group chat when stream is false', async () => {
+		const bot = createBot();
+
+		using actionSpy = stub(
+			bot.api,
+			'sendChatAction',
+			() => Promise.resolve(true),
+		);
+		using msgSpy = stub(bot.api, 'sendMessage', () => Promise.resolve({}));
+		using _ = stubFiles({
+			'config.json': {
+				channels: { telegram: { token: 'mock-token' } },
+				allowedUsers: [],
+				agent: { name: 'pi', stream: false },
+			},
+			'meta.json': {
+				channel: 'telegram',
+				chatId: 123,
+				messageId: 456,
+				chatType: 'group',
+			},
+			',job': 'first line\nsome output\nlast line',
+		});
+		using renameStub = stub(Deno, 'rename', () => Promise.resolve());
+
+		await processJob('/mock/dir', ',job', bot);
+
+		assertSpyCalls(actionSpy, 1);
+		assertSpyCalls(msgSpy, 1);
+		assertSpyCall(msgSpy, 0, {
+			args: [
+				123,
+				'some output',
+				{
+					reply_parameters: {
+						message_id: 456,
+						allow_sending_without_reply: true,
+					},
+				},
+			],
+		});
+
+		assertSpyCall(renameStub, 0, {
+			args: ['/mock/dir/,job', join(DATA_DIR, ',job.d', ',job')],
+		});
+	});
+
+	it('sends normally for private chat when stream is true', async () => {
+		const bot = createBot();
+
+		using actionSpy = stub(
+			bot.api,
+			'sendChatAction',
+			() => Promise.resolve(true),
+		);
+		using msgSpy = stub(bot.api, 'sendMessage', () => Promise.resolve({}));
+		using _ = stubFiles({
+			'config.json': {
+				channels: { telegram: { token: 'mock-token' } },
+				allowedUsers: [],
+				agent: { name: 'pi', stream: true },
+			},
+			'meta.json': {
+				channel: 'telegram',
+				chatId: 123,
+				messageId: 456,
+				chatType: 'private',
+			},
+			',job': 'first line\nsome output\nlast line',
+		});
+		using renameStub = stub(Deno, 'rename', () => Promise.resolve());
+
+		await processJob('/mock/dir', ',job', bot);
+
+		assertSpyCalls(actionSpy, 1);
+		assertSpyCalls(msgSpy, 1);
+		assertSpyCall(msgSpy, 0, {
+			args: [
+				123,
+				'some output',
+				{
+					reply_parameters: {
+						message_id: 456,
+						allow_sending_without_reply: true,
+					},
+				},
+			],
+		});
+		assertSpyCall(renameStub, 0, {
+			args: ['/mock/dir/,job', join(DATA_DIR, ',job.d', ',job')],
+		});
+	});
+});
+
+describe('isGroupChat', () => {
+	it('returns true for group', () => {
+		assertEquals(isGroupChat('group'), true);
+	});
+
+	it('returns true for supergroup', () => {
+		assertEquals(isGroupChat('supergroup'), true);
+	});
+
+	it('returns false for private', () => {
+		assertEquals(isGroupChat('private'), false);
 	});
 });
 
