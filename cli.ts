@@ -923,7 +923,7 @@ export async function dispatch(args: string[]): Promise<void> {
 		}
 	}
 
-	const stream = config.agent.stream;
+	const stream = args.includes('--id') ? config.agent.stream : false;
 	const agent = getAgentCommand({ agentName, stream });
 
 	const cmd = new Deno.Command(agent.cmd, {
@@ -990,9 +990,9 @@ export async function dispatch(args: string[]): Promise<void> {
 			Deno.exit(status.code);
 		}
 	} else {
-		const result = await child.output();
-		if (!result.success) {
-			Deno.exit(result.code);
+		const status = await child.status;
+		if (!status.success) {
+			Deno.exit(status.code);
 		}
 	}
 }
