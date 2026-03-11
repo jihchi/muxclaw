@@ -356,6 +356,41 @@ describe('dispatch', () => {
 		assertSpyCalls(exitStub, 0);
 	});
 
+	it('uses inherited stdout when dispatching without --id', async () => {
+		using _ = stubFiles({
+			'config.json': {
+				channels: { telegram: { token: 'mock-token' } },
+				allowedUsers: [],
+				agent: { name: 'claude', stream: true },
+			},
+		});
+
+		using cmdStub = stub(
+			Deno,
+			'Command',
+			() => fakeCommand(),
+		);
+		using exitStub = stubDenoExit();
+
+		await dispatch(['whats', 'up']);
+
+		assertSpyCall(cmdStub, 0, {
+			args: ['claude', {
+				args: [
+					'--add-dir',
+					DATA_DIR,
+					'-p',
+				],
+				cwd: Deno.cwd(),
+				stdin: 'piped',
+				stdout: 'inherit',
+				stderr: 'inherit',
+			}],
+		});
+
+		assertSpyCalls(exitStub, 0);
+	});
+
 	it('reads prompt from file with --id', async () => {
 		using _ = stubFiles({
 			'config.json': {
