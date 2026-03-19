@@ -12,3 +12,7 @@ Thumbs.db
 
 # https://mise.jdx.dev/configuration.html#mise-toml
 mise.local.toml
+
+# Git worktrees
+.worktrees
+worktrees

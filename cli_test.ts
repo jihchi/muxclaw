@@ -260,6 +260,49 @@ describe('processStreamOutput', () => {
 		assertEquals(final, 'hello world');
 		assertEquals(calls, ['hello', 'hello world']);
 	});
+
+	it('skips empty delta updates', async () => {
+		const encoder = new TextEncoder();
+		const stdout = new ReadableStream({
+			start(controller) {
+				// Delta 1: Empty text, triggers elapsed check but shouldn't call update
+				controller.enqueue(
+					encoder.encode(
+						JSON.stringify({ type: 'delta', text: '' }) + '\n',
+					),
+				);
+				// Delta 2: Empty text, triggers elapsed check but shouldn't call update
+				controller.enqueue(
+					encoder.encode(
+						JSON.stringify({ type: 'delta', text: '' }) + '\n',
+					),
+				);
+				// Delta 3: Valid text
+				controller.enqueue(
+					encoder.encode(
+						JSON.stringify({ type: 'delta', text: 'hello' }) + '\n',
+					),
+				);
+				controller.close();
+			},
+		});
+
+		const calls: string[] = [];
+		const sender: StreamSender = {
+			throttleMs: 500, // Large enough to not trigger elapsed for subsequent deltas
+			update: (text: string) => {
+				calls.push(text);
+				return Promise.resolve();
+			},
+		};
+
+		const parser: Parser = (json: unknown) => v.parse(StreamEvent, json);
+
+		const final = await processStreamOutput({ stdout, sender, parser });
+
+		assertEquals(final, 'hello');
+		assertEquals(calls, ['hello']); // Shouldn't have '' in calls
+	});
 });
 
 describe('validateWorkspace', () => {

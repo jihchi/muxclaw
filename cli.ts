@@ -841,14 +841,16 @@ export async function processStreamOutput({
 				const grown = pile.length - lastSentLen >= THROTTLE_CHARS;
 
 				if (elapsed || grown) {
-					try {
-						await sender.update(truncateDraft(pile));
-						lastSentAt = now;
-						lastSentLen = pile.length;
-						hasUnsentDraft = false;
-					} catch (err) {
-						console.error('[dispatch] stream update failed:', err);
+					if (pile) {
+						try {
+							await sender.update(truncateDraft(pile));
+							lastSentAt = now;
+							lastSentLen = pile.length;
+						} catch (err) {
+							console.error('[dispatch] stream update failed:', err);
+						}
 					}
+					hasUnsentDraft = false;
 				}
 			}
 		} catch (err) {
@@ -861,7 +863,7 @@ export async function processStreamOutput({
 		}
 	}
 
-	if (hasUnsentDraft) {
+	if (hasUnsentDraft && pile) {
 		try {
 			await sender.update(truncateDraft(pile));
 		} catch (err) {
