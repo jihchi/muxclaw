@@ -566,8 +566,17 @@ export async function ingress(): Promise<void> {
 
 	// Private chats: handle all messages
 	bot.chatType('private').on('message', handleMessage);
-	// Group chats: pre-filter to only messages with mentions
-	bot.chatType(['group', 'supergroup']).on('::mention', handleMessage);
+	// Group chats: pre-filter to only messages with mentions of this bot
+	bot.chatType(['group', 'supergroup'])
+		.on('::mention')
+		.filter(
+			(ctx) =>
+				ctx.entities('mention').some((e) =>
+					e.text.toLowerCase() === `@${ctx.me.username.toLowerCase()}`
+				) ||
+				ctx.entities('text_mention').some((e) => e.user.id === ctx.me.id),
+			handleMessage,
+		);
 
 	logStartup('ingress');
 	console.log(
