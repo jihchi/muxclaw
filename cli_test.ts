@@ -19,7 +19,9 @@ import {
 	type Config,
 	createIngressHandler,
 	dispatch,
+	extractStructuredData,
 	getAgentParser,
+	getMsgType,
 	type IngressContext,
 	isGroupChat,
 	type Parser,
@@ -1372,5 +1374,158 @@ describe('ingress handler', () => {
 		});
 
 		assertSpyCall(symlinkStub, 0, { args: [msgDir, join(DATA_DIR, ',job.d')] });
+	});
+});
+
+describe('getMsgType', () => {
+	it('returns text for text message', () => {
+		assertEquals(getMsgType({ text: 'hello' }), 'text');
+	});
+
+	it('returns photo for photo message', () => {
+		assertEquals(getMsgType({ photo: [] }), 'photo');
+	});
+
+	it('returns document with filename', () => {
+		assertEquals(
+			getMsgType({
+				document: { file_id: '1', file_unique_id: '1', file_name: 'test.pdf' },
+			}),
+			'document(test.pdf)',
+		);
+	});
+
+	it('returns location for location message', () => {
+		assertEquals(
+			getMsgType({ location: { latitude: 0, longitude: 0 } }),
+			'location',
+		);
+	});
+
+	it('returns venue for venue message', () => {
+		assertEquals(
+			getMsgType({
+				venue: {
+					location: { latitude: 0, longitude: 0 },
+					title: 'A',
+					address: 'B',
+				},
+			}),
+			'venue',
+		);
+	});
+
+	it('returns contact for contact message', () => {
+		assertEquals(
+			getMsgType({ contact: { phone_number: '123', first_name: 'John' } }),
+			'contact',
+		);
+	});
+
+	it('returns poll for poll message', () => {
+		assertEquals(
+			getMsgType({
+				poll: {
+					id: '1',
+					question: 'Q',
+					options: [],
+					total_voter_count: 0,
+					is_closed: false,
+					is_anonymous: false,
+					type: 'regular',
+					allows_multiple_answers: false,
+				},
+			}),
+			'poll',
+		);
+	});
+
+	it('returns dice for dice message', () => {
+		assertEquals(getMsgType({ dice: { emoji: '🎲', value: 6 } }), 'dice');
+	});
+
+	it('returns other for unknown message', () => {
+		assertEquals(getMsgType({}), 'other');
+	});
+});
+
+describe('extractStructuredData', () => {
+	it('returns empty string for missing or empty message', () => {
+		assertEquals(extractStructuredData(undefined), '');
+		assertEquals(extractStructuredData({ text: 'hello' }), '');
+	});
+
+	it('extracts location data', () => {
+		const result = extractStructuredData({
+			location: { latitude: 37.7749, longitude: -122.4194 },
+		});
+		assertEquals(
+			result,
+			'[Location Shared]: Latitude 37.7749, Longitude -122.4194',
+		);
+	});
+
+	it('extracts venue data', () => {
+		const result = extractStructuredData({
+			venue: {
+				location: { latitude: 0, longitude: 0 },
+				title: 'Central Park',
+				address: 'New York, NY',
+			},
+		});
+		assertEquals(result, '[Venue Shared]: Central Park (New York, NY)');
+	});
+
+	it('extracts contact data', () => {
+		const result1 = extractStructuredData({
+			contact: {
+				phone_number: '+1234567890',
+				first_name: 'John',
+				last_name: 'Doe',
+			},
+		});
+		assertEquals(result1, '[Contact Shared]: John Doe (+1234567890)');
+
+		const result2 = extractStructuredData({
+			contact: { phone_number: '+1987654321', first_name: 'Jane' },
+		});
+		assertEquals(result2, '[Contact Shared]: Jane (+1987654321)');
+	});
+
+	it('extracts poll data', () => {
+		const result = extractStructuredData({
+			poll: {
+				id: '1',
+				question: 'Favorite color?',
+				options: [
+					{ text: 'Red', voter_count: 0 },
+					{ text: 'Blue', voter_count: 0 },
+				],
+				total_voter_count: 0,
+				is_closed: false,
+				is_anonymous: false,
+				type: 'regular',
+				allows_multiple_answers: false,
+			},
+		});
+		assertEquals(result, '[Poll Shared]: Favorite color?\n- Red\n- Blue');
+	});
+
+	it('extracts dice data', () => {
+		const result = extractStructuredData({
+			dice: { emoji: '🎯', value: 4 },
+		});
+		assertEquals(result, '[Dice Rolled]: Emoji 🎯, Value 4');
+	});
+
+	it('combines multiple structured data types', () => {
+		const result = extractStructuredData({
+			location: { latitude: 10, longitude: 20 },
+			dice: { emoji: '🎲', value: 6 },
+		});
+		assertEquals(
+			result,
+			'[Location Shared]: Latitude 10, Longitude 20\n\n[Dice Rolled]: Emoji 🎲, Value 6',
+		);
 	});
 });

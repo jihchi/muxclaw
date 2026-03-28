@@ -308,7 +308,7 @@ function mimeToExt(mime: string | undefined, fallback: string): string {
 	return map[mime] ?? fallback;
 }
 
-function getMsgType(message?: Partial<Message>): string {
+export function getMsgType(message?: Partial<Message>): string {
 	if (message?.text) return 'text';
 	if (message?.photo) return 'photo';
 	if (message?.document) {
@@ -318,8 +318,45 @@ function getMsgType(message?: Partial<Message>): string {
 	if (message?.voice) return 'voice';
 	if (message?.audio) return 'audio';
 	if (message?.sticker) return 'sticker';
+	if (message?.location) return 'location';
+	if (message?.venue) return 'venue';
+	if (message?.contact) return 'contact';
+	if (message?.poll) return 'poll';
+	if (message?.dice) return 'dice';
 	if (message?.reply_to_message) return 'reply';
 	return 'other';
+}
+
+export function extractStructuredData(message?: Partial<Message>): string {
+	if (!message) return '';
+	const parts: string[] = [];
+
+	if (message.location) {
+		parts.push(
+			`[Location Shared]: Latitude ${message.location.latitude}, Longitude ${message.location.longitude}`,
+		);
+	}
+	if (message.venue) {
+		parts.push(
+			`[Venue Shared]: ${message.venue.title} (${message.venue.address})`,
+		);
+	}
+	if (message.contact) {
+		const name = [message.contact.first_name, message.contact.last_name]
+			.filter(Boolean).join(' ');
+		parts.push(`[Contact Shared]: ${name} (${message.contact.phone_number})`);
+	}
+	if (message.poll) {
+		const options = message.poll.options.map((o) => `- ${o.text}`).join('\n');
+		parts.push(`[Poll Shared]: ${message.poll.question}\n${options}`);
+	}
+	if (message.dice) {
+		parts.push(
+			`[Dice Rolled]: Emoji ${message.dice.emoji}, Value ${message.dice.value}`,
+		);
+	}
+
+	return parts.join('\n\n');
 }
 
 function extractAttachments(message?: Partial<Message>): AttachmentInfo[] {
@@ -389,7 +426,9 @@ export function createIngressHandler(
 		const isAllowed = userId != null && allowedIds.has(String(userId));
 		const isMissingId = chatId == null || messageId == null;
 		const username = ctx.from?.username ?? '(unknown)';
-		const text = ctx.message?.text ?? ctx.message?.caption ?? '';
+		const rawText = ctx.message?.text ?? ctx.message?.caption ?? '';
+		const structuredData = extractStructuredData(ctx.message);
+		const text = `${rawText}\n\n${structuredData}`.trim();
 		const attachments = extractAttachments(ctx.message);
 		const msgType = getMsgType(ctx.message);
 
