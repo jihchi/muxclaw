@@ -36,3 +36,16 @@ AI assistant multiplexer that connects messaging channels to coding agents via
 - **Job Ordering:** `nq` jobs must be processed in lexicographical order of
   their filenames (`,HEXTIME.PID`) for chronological consistency.
 - **Quality:** Run lint, type check, format and test before every commit.
+- **Commits:** Do NOT use conventional commits (e.g., `feat:`, `fix:`, `docs:`).
+  Use a simple, descriptive message instead.
+
+## External API Documentation
+
+When working on features related to Telegram integration or using the grammY
+library, agents should consult the following documentation:
+
+- **grammY:** Browse the [grammY API Reference](https://grammy.dev/ref/) to
+  understand the bot framework API.
+- **Telegram Bot API:** Refer to the official
+  [Telegram Bot API documentation](https://core.telegram.org/bots/api) for
+  detailed information on available methods, objects, and types.
