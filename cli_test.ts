@@ -305,6 +305,98 @@ describe('processStreamOutput', () => {
 		assertEquals(final, 'hello');
 		assertEquals(calls, ['hello']); // Shouldn't have '' in calls
 	});
+
+	it('handles plain text lines (non-JSON)', async () => {
+		const encoder = new TextEncoder();
+		const stdout = new ReadableStream({
+			start(controller) {
+				controller.enqueue(encoder.encode('plain text line\n'));
+				controller.enqueue(encoder.encode('another line\n'));
+				controller.close();
+			},
+		});
+
+		const calls: string[] = [];
+		const sender: StreamSender = {
+			throttleMs: 500,
+			update: (text: string) => {
+				calls.push(text);
+				return Promise.resolve();
+			},
+		};
+
+		const parser: Parser = (json: unknown) => v.parse(StreamEvent, json);
+
+		const final = await processStreamOutput({ stdout, sender, parser });
+
+		assertEquals(final, 'plain text line\nanother line\n');
+		assertEquals(calls, [
+			'plain text line\n',
+			'plain text line\nanother line\n',
+		]);
+	});
+
+	it('handles mixed plain text and JSON deltas', async () => {
+		const encoder = new TextEncoder();
+		const stdout = new ReadableStream({
+			start(controller) {
+				controller.enqueue(
+					encoder.encode(
+						JSON.stringify({ type: 'delta', text: 'hello' }) + '\n',
+					),
+				);
+				controller.enqueue(encoder.encode('plain text\n'));
+				controller.enqueue(
+					encoder.encode(
+						JSON.stringify({ type: 'delta', text: ' world' }) + '\n',
+					),
+				);
+				controller.close();
+			},
+		});
+
+		const calls: string[] = [];
+		const sender: StreamSender = {
+			throttleMs: 500,
+			update: (text: string) => {
+				calls.push(text);
+				return Promise.resolve();
+			},
+		};
+
+		const parser: Parser = (json: unknown) => v.parse(StreamEvent, json);
+
+		const final = await processStreamOutput({ stdout, sender, parser });
+
+		assertEquals(final, 'helloplain text\n world');
+		assertEquals(calls, ['hello', 'helloplain text\n world']);
+	});
+
+	it('treats invalid JSON starting with { as plain text', async () => {
+		const encoder = new TextEncoder();
+		const stdout = new ReadableStream({
+			start(controller) {
+				controller.enqueue(encoder.encode('{not valid json}\n'));
+				controller.close();
+			},
+		});
+
+		const calls: string[] = [];
+		const sender: StreamSender = {
+			throttleMs: 500,
+			update: (text: string) => {
+				calls.push(text);
+				return Promise.resolve();
+			},
+		};
+
+		const parser: Parser = (json: unknown) => v.parse(StreamEvent, json);
+
+		const final = await processStreamOutput({ stdout, sender, parser });
+
+		assertEquals(final, '{not valid json}\n');
+		assertEquals(calls, ['{not valid json}\n']);
+	});
 });
 
 describe('validateWorkspace', () => {

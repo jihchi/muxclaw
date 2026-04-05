@@ -897,13 +897,16 @@ export async function processStreamOutput({
 		const trimmed = line.trim();
 		if (!trimmed) continue;
 
-		// Handle plain text lines (non-JSON) as direct text output
-		if (!trimmed.startsWith('{')) {
+		// Try to parse as JSON event. Pi outputs JSON objects (always start with
+		// '{'), so lines that don't start with '{' are treated as plain text.
+		if (trimmed[0] !== '{') {
+			// Plain text lines are appended with '\n' because TextLineStream strips
+			// the original newline; JSON deltas are fragments concatenated without
+			// separators, so they must not receive an extra newline.
 			await appendAndMaybeSend(`${trimmed}\n`);
 			continue;
 		}
 
-		// Try to parse as JSON event
 		try {
 			const json = JSON.parse(trimmed);
 			const event = parser(json);
@@ -918,12 +921,15 @@ export async function processStreamOutput({
 				await appendAndMaybeSend(event.text);
 			}
 		} catch (err) {
-			console.error(
-				'[dispatch] Failed to parse JSON or process event:',
+			// Line started with '{' but wasn't valid JSON or didn't match any
+			// known event — treat as plain text so the output isn't lost.
+			console.warn(
+				'[dispatch] Unrecognized JSON-like line, treating as text:',
 				err,
 				'. Line:',
 				line,
 			);
+			await appendAndMaybeSend(`${trimmed}\n`);
 		}
 	}
 
