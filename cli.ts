@@ -862,6 +862,33 @@ export async function processStreamOutput({
 	let lastSentLen = 0;
 	let hasUnsentDraft = false;
 
+	async function flushPile(): Promise<void> {
+		if (!pile) return;
+		try {
+			await sender.update(truncateDraft(pile));
+			lastSentAt = Date.now();
+			lastSentLen = pile.length;
+			hasUnsentDraft = false;
+		} catch (err) {
+			console.error('[dispatch] stream update failed:', err);
+		}
+	}
+
+	function shouldSend(): boolean {
+		const now = Date.now();
+		const elapsed = now - lastSentAt >= sender.throttleMs;
+		const grown = pile.length - lastSentLen >= THROTTLE_CHARS;
+		return elapsed || grown;
+	}
+
+	async function appendAndMaybeSend(text: string): Promise<void> {
+		pile += text;
+		hasUnsentDraft = true;
+		if (shouldSend()) {
+			await flushPile();
+		}
+	}
+
 	const stream = stdout
 		.pipeThrough(new TextDecoderStream())
 		.pipeThrough(new TextLineStream());
@@ -870,6 +897,13 @@ export async function processStreamOutput({
 		const trimmed = line.trim();
 		if (!trimmed) continue;
 
+		// Handle plain text lines (non-JSON) as direct text output
+		if (!trimmed.startsWith('{')) {
+			await appendAndMaybeSend(`${trimmed}\n`);
+			continue;
+		}
+
+		// Try to parse as JSON event
 		try {
 			const json = JSON.parse(trimmed);
 			const event = parser(json);
@@ -881,25 +915,7 @@ export async function processStreamOutput({
 			}
 
 			if (event.type === 'delta') {
-				pile += event.text;
-				hasUnsentDraft = true;
-
-				const now = Date.now();
-				const elapsed = now - lastSentAt >= sender.throttleMs;
-				const grown = pile.length - lastSentLen >= THROTTLE_CHARS;
-
-				if (elapsed || grown) {
-					if (pile) {
-						try {
-							await sender.update(truncateDraft(pile));
-							lastSentAt = now;
-							lastSentLen = pile.length;
-						} catch (err) {
-							console.error('[dispatch] stream update failed:', err);
-						}
-					}
-					hasUnsentDraft = false;
-				}
+				await appendAndMaybeSend(event.text);
 			}
 		} catch (err) {
 			console.error(
@@ -912,11 +928,7 @@ export async function processStreamOutput({
 	}
 
 	if (hasUnsentDraft && pile) {
-		try {
-			await sender.update(truncateDraft(pile));
-		} catch (err) {
-			console.error('[dispatch] stream update failed:', err);
-		}
+		await flushPile();
 	}
 
 	return final || pile;
