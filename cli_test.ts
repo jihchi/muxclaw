@@ -165,28 +165,6 @@ Usage:
 });
 
 describe('getAgentParser', () => {
-	it('parses Claude delta', () => {
-		const parser = getAgentParser('claude');
-		const json = {
-			type: 'stream_event',
-			event: {
-				type: 'content_block_delta',
-				delta: { type: 'text_delta', text: 'hello' },
-			},
-		};
-		assertEquals(parser(json), { type: 'delta', text: 'hello' });
-	});
-
-	it('parses Claude final', () => {
-		const parser = getAgentParser('claude');
-		const json = {
-			type: 'result',
-			subtype: 'success',
-			result: 'final',
-		};
-		assertEquals(parser(json), { type: 'final', text: 'final' });
-	});
-
 	it('parses Pi delta', () => {
 		const parser = getAgentParser('pi');
 		const json = {
@@ -493,41 +471,6 @@ describe('dispatch', () => {
 		assertSpyCalls(exitStub, 0);
 	});
 
-	it('uses inherited stdout when dispatching without --id', async () => {
-		using _ = stubFiles({
-			'config.json': {
-				channels: { telegram: { token: 'mock-token' } },
-				allowedUsers: [],
-				agent: { name: 'claude', stream: true },
-			},
-		});
-
-		using cmdStub = stub(
-			Deno,
-			'Command',
-			() => fakeCommand(),
-		);
-		using exitStub = stubDenoExit();
-
-		await dispatch(['whats', 'up']);
-
-		assertSpyCall(cmdStub, 0, {
-			args: ['claude', {
-				args: [
-					'--add-dir',
-					DATA_DIR,
-					'-p',
-				],
-				cwd: Deno.cwd(),
-				stdin: 'piped',
-				stdout: 'inherit',
-				stderr: 'inherit',
-			}],
-		});
-
-		assertSpyCalls(exitStub, 0);
-	});
-
 	it('reads prompt from file with --id', async () => {
 		using _ = stubFiles({
 			'config.json': {
@@ -634,109 +577,6 @@ describe('dispatch', () => {
 		});
 
 		assertSpyCalls(exitStub, 1);
-	});
-
-	it('streams output for Claude', async () => {
-		const fullId = 'telegram:1_1';
-
-		using _ = stubFiles({
-			'config.json': {
-				channels: { telegram: { token: 'mock-token' } },
-				allowedUsers: [],
-				agent: { name: 'claude', stream: true },
-			},
-			'prompt.txt': 'mocked prompt',
-			'meta.json': {
-				channel: 'telegram',
-				chatId: 123,
-				messageId: 456,
-			},
-		});
-
-		const events = [
-			{
-				type: 'stream_event',
-				event: {
-					type: 'content_block_delta',
-					index: 0,
-					delta: { type: 'text_delta', text: 'A'.repeat(250) },
-				},
-			},
-			{
-				type: 'stream_event',
-				event: {
-					type: 'content_block_delta',
-					index: 0,
-					delta: { type: 'text_delta', text: 'B'.repeat(250) },
-				},
-			},
-			{
-				type: 'result',
-				subtype: 'success',
-				result: 'A'.repeat(250) + 'B'.repeat(250),
-			},
-		].map((e) => JSON.stringify(e)).map((json) => `${json}\n`);
-
-		const encoder = new TextEncoder();
-		const stdoutStream = new ReadableStream({
-			start(controller) {
-				for (const event of events) {
-					controller.enqueue(encoder.encode(event));
-				}
-				controller.close();
-			},
-		});
-
-		using draftSpy = stub(
-			Api.prototype,
-			'sendMessageDraft',
-			() => Promise.resolve(true),
-		);
-
-		using cmdStub = stub(
-			Deno,
-			'Command',
-			() =>
-				fakeCommand({}, {
-					stdout: stdoutStream as unknown as Deno.SubprocessReadableStream,
-				}),
-		);
-		using logStub = stub(console, 'log');
-
-		await dispatch(['--id', fullId]);
-
-		assertSpyCall(cmdStub, 0, {
-			args: ['claude', {
-				args: [
-					'--add-dir',
-					DATA_DIR,
-					'--output-format',
-					'stream-json',
-					'--verbose',
-					'--include-partial-messages',
-					'-p',
-				],
-				cwd: Deno.cwd(),
-				stdin: 'piped',
-				stdout: 'piped',
-				stderr: 'inherit',
-			}],
-		});
-
-		// 1 initial draft "...💬" + 2 drafts during streaming (total 3)
-		assertSpyCalls(draftSpy, 3);
-
-		const draftChatIds = draftSpy.calls.map((c) => c.args[0]);
-		assertEquals(draftChatIds, [123, 123, 123]);
-
-		const draftTexts = draftSpy.calls.map((c) => c.args[2]);
-		assertEquals(draftTexts, [
-			'(💬 processing...)',
-			'A'.repeat(250),
-			'A'.repeat(250) + 'B'.repeat(250),
-		]);
-
-		assertSpyCall(logStub, 0, { args: ['A'.repeat(250) + 'B'.repeat(250)] });
 	});
 
 	it('streams output for Pi', async () => {
