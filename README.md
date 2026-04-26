@@ -24,8 +24,7 @@ ingress                         egress
 
 Requires [Deno](https://deno.land/) (v2+),
 [nq](https://github.com/leahneukirchen/nq), and a coding agent
-([Pi](https://pi.dev/) or
-[Claude Code](https://docs.anthropic.com/en/docs/claude-code)).
+([Pi](https://pi.dev/)).
 
 [Create a Telegram bot](https://core.telegram.org/bots/features#creating-a-new-bot)
 and grab the bot token, then create `~/.config/muxclaw/config.json`:

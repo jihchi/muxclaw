@@ -5,7 +5,7 @@ import { basename, dirname, join } from '@std/path';
 import { TextLineStream } from '@std/streams/text-line-stream';
 import * as v from '@valibot/valibot';
 
-const AgentName = v.picklist(['claude', 'pi']);
+const AgentName = v.picklist(['pi']);
 type AgentName = v.InferOutput<typeof AgentName>;
 
 const Config = v.object({
@@ -34,24 +34,6 @@ export const StreamEvent = v.union([
 export type StreamEvent = v.InferOutput<typeof StreamEvent>;
 
 export type Parser = (json: unknown) => StreamEvent | undefined;
-
-const ClaudeStreamEvent = v.union([
-	v.object({
-		type: v.literal('result'),
-		subtype: v.literal('success'),
-		result: v.string(),
-	}),
-	v.object({
-		type: v.literal('stream_event'),
-		event: v.object({
-			type: v.literal('content_block_delta'),
-			delta: v.object({
-				type: v.literal('text_delta'),
-				text: v.string(),
-			}),
-		}),
-	}),
-]);
 
 const PiStreamEvent = v.union([
 	v.object({
@@ -195,21 +177,6 @@ export async function validateWorkspace(config: Config): Promise<void> {
 	}
 }
 
-function parseClaude(json: unknown): StreamEvent | undefined {
-	const result = v.safeParse(ClaudeStreamEvent, json);
-	if (!result.success) return;
-
-	const d = result.output;
-
-	if (d.type === 'result') {
-		return { type: 'final', text: d.result };
-	}
-
-	if (d.type === 'stream_event') {
-		return { type: 'delta', text: d.event.delta.text };
-	}
-}
-
 function parsePi(json: unknown): StreamEvent | undefined {
 	const result = v.safeParse(PiStreamEvent, json);
 	if (!result.success) return;
@@ -230,8 +197,6 @@ function parsePi(json: unknown): StreamEvent | undefined {
 
 export function getAgentParser(agentName: AgentName): Parser {
 	switch (agentName) {
-		case 'claude':
-			return parseClaude;
 		case 'pi':
 			return parsePi;
 	}
@@ -245,20 +210,6 @@ function getAgentCommand({
 	stream?: boolean;
 }): { cmd: string; args: string[] } {
 	switch (agentName) {
-		case 'claude': {
-			const args = stream
-				? [
-					'--add-dir',
-					DATA_DIR,
-					'--output-format',
-					'stream-json',
-					'--verbose',
-					'--include-partial-messages',
-					'-p',
-				]
-				: ['--add-dir', DATA_DIR, '-p'];
-			return { cmd: 'claude', args };
-		}
 		case 'pi': {
 			const args = stream ? ['--mode', 'json', '-p'] : ['-p'];
 			return { cmd: 'pi', args };
