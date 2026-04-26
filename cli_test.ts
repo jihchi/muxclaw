@@ -20,7 +20,7 @@ import {
 	createIngressHandler,
 	dispatch,
 	extractStructuredData,
-	getAgentParser,
+	getAgent,
 	getMsgType,
 	type IngressContext,
 	isGroupChat,
@@ -164,23 +164,29 @@ Usage:
 	);
 });
 
-describe('getAgentParser', () => {
+describe('getAgent', () => {
+	const adapter = getAgent('pi');
+
 	it('parses Pi delta', () => {
-		const parser = getAgentParser('pi');
 		const json = {
 			type: 'message_update',
 			assistantMessageEvent: { type: 'text_delta', delta: 'world' },
 		};
-		assertEquals(parser(json), { type: 'delta', text: 'world' });
+		assertEquals(adapter.parseStreamEvent(json), {
+			type: 'delta',
+			text: 'world',
+		});
 	});
 
 	it('parses Pi final', () => {
-		const parser = getAgentParser('pi');
 		const json = {
 			type: 'message_end',
 			message: { role: 'assistant', content: [{ type: 'text', text: 'done' }] },
 		};
-		assertEquals(parser(json), { type: 'final', text: 'done' });
+		assertEquals(adapter.parseStreamEvent(json), {
+			type: 'final',
+			text: 'done',
+		});
 	});
 });
 
@@ -534,7 +540,7 @@ describe('dispatch', () => {
 	});
 
 	it('shows error if message not found with --id', async () => {
-		using readStub = stub(
+		using _readStub = stub(
 			Deno,
 			'readTextFile',
 			(path) => {
@@ -554,13 +560,53 @@ describe('dispatch', () => {
 		using exitStub = stubDenoExit();
 
 		const fullId = 'telegram:999_999';
-		const [channel, id] = fullId.split(':');
+
+		await assertRejects(
+			() => dispatch(['--id', fullId]),
+			Error,
+			'exit',
+		);
+
+		assertSpyCall(errorStub, 0, {
+			args: [`Error: message not found: ${fullId}`],
+		});
+
+		assertSpyCalls(exitStub, 1);
+	});
+
+	it('shows metadata error if --id meta is invalid', async () => {
+		using _readStub = stub(
+			Deno,
+			'readTextFile',
+			(path) => {
+				const p = path.toString();
+				if (p.includes('config.json')) {
+					return Promise.resolve(
+						JSON.stringify({
+							channels: { telegram: { token: 'mock-token' } },
+							allowedUsers: [],
+						}),
+					);
+				}
+				if (p.includes('prompt.txt')) {
+					return Promise.resolve('mocked prompt');
+				}
+				if (p.includes('meta.json')) {
+					return Promise.resolve('invalid json');
+				}
+				return Promise.reject(new Deno.errors.NotFound());
+			},
+		);
+		using errorStub = stub(console, 'error');
+		using exitStub = stubDenoExit();
+
+		const fullId = 'telegram:999_999';
 		const expectedPath = join(
 			DATA_DIR,
 			'messages',
-			channel,
-			id,
-			'prompt.txt',
+			'telegram',
+			'999_999',
+			'meta.json',
 		);
 
 		await assertRejects(
@@ -569,11 +615,8 @@ describe('dispatch', () => {
 			'exit',
 		);
 
-		assertSpyCall(readStub, 0, { args: [join(CONFIG_DIR, 'config.json')] });
-		assertSpyCall(readStub, 1, { args: [expectedPath] });
-
 		assertSpyCall(errorStub, 0, {
-			args: [`Error: message not found: ${expectedPath}`],
+			args: [`Error: job meta data invalid or not found: ${expectedPath}`],
 		});
 
 		assertSpyCalls(exitStub, 1);
