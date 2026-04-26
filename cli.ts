@@ -6,7 +6,6 @@ import { TextLineStream } from '@std/streams/text-line-stream';
 import * as v from '@valibot/valibot';
 
 const AgentName = v.picklist(['pi']);
-type AgentName = v.InferOutput<typeof AgentName>;
 
 const Config = v.object({
 	channels: v.object({
@@ -34,26 +33,6 @@ export const StreamEvent = v.union([
 export type StreamEvent = v.InferOutput<typeof StreamEvent>;
 
 export type Parser = (json: unknown) => StreamEvent | undefined;
-
-const PiStreamEvent = v.union([
-	v.object({
-		type: v.literal('message_end'),
-		message: v.object({
-			role: v.literal('assistant'),
-			content: v.array(v.object({
-				type: v.string(),
-				text: v.optional(v.string()),
-			})),
-		}),
-	}),
-	v.object({
-		type: v.literal('message_update'),
-		assistantMessageEvent: v.object({
-			type: v.literal('text_delta'),
-			delta: v.string(),
-		}),
-	}),
-]);
 
 const ChatType = v.picklist(['private', 'group', 'supergroup']);
 type ChatType = v.InferOutput<typeof ChatType>;
@@ -177,44 +156,67 @@ export async function validateWorkspace(config: Config): Promise<void> {
 	}
 }
 
-function parsePi(json: unknown): StreamEvent | undefined {
-	const result = v.safeParse(PiStreamEvent, json);
-	if (!result.success) return;
-
-	const d = result.output;
-
-	if (d.type === 'message_end') {
-		const lastText = d.message.content.findLast((c) => c.type === 'text');
-		if (lastText?.text) {
-			return { type: 'final', text: lastText.text };
-		}
-	}
-
-	if (d.type === 'message_update') {
-		return { type: 'delta', text: d.assistantMessageEvent.delta };
-	}
+interface AgentAdapter {
+	name: string;
+	buildCommand(opts: { stream: boolean }): { cmd: string; args: string[] };
+	parseStreamEvent(json: unknown): StreamEvent | undefined;
 }
 
-export function getAgentParser(agentName: AgentName): Parser {
-	switch (agentName) {
-		case 'pi':
-			return parsePi;
-	}
-}
+const PiStreamEvent = v.union([
+	v.object({
+		type: v.literal('message_end'),
+		message: v.object({
+			role: v.literal('assistant'),
+			content: v.array(v.object({
+				type: v.string(),
+				text: v.optional(v.string()),
+			})),
+		}),
+	}),
+	v.object({
+		type: v.literal('message_update'),
+		assistantMessageEvent: v.object({
+			type: v.literal('text_delta'),
+			delta: v.string(),
+		}),
+	}),
+]);
 
-function getAgentCommand({
-	agentName,
-	stream,
-}: {
-	agentName: AgentName;
-	stream?: boolean;
-}): { cmd: string; args: string[] } {
-	switch (agentName) {
-		case 'pi': {
-			const args = stream ? ['--mode', 'json', '-p'] : ['-p'];
-			return { cmd: 'pi', args };
+const piAdapter: AgentAdapter = {
+	name: 'pi',
+	buildCommand({ stream }) {
+		const args = stream ? ['--mode', 'json', '-p'] : ['-p'];
+		return { cmd: 'pi', args };
+	},
+	parseStreamEvent(json: unknown): StreamEvent | undefined {
+		const result = v.safeParse(PiStreamEvent, json);
+		if (!result.success) return;
+
+		const d = result.output;
+
+		if (d.type === 'message_end') {
+			const lastText = d.message.content.findLast((c) => c.type === 'text');
+			if (lastText?.text) {
+				return { type: 'final', text: lastText.text };
+			}
 		}
+
+		if (d.type === 'message_update') {
+			return { type: 'delta', text: d.assistantMessageEvent.delta };
+		}
+	},
+};
+
+const agentRegistry: Record<string, AgentAdapter> = {
+	pi: piAdapter,
+};
+
+export function getAgent(name: string): AgentAdapter {
+	const adapter = agentRegistry[name];
+	if (!adapter) {
+		throw new Error(`Unknown agent: ${name}`);
 	}
+	return adapter;
 }
 
 function logStartup(label: string): void {
@@ -237,8 +239,64 @@ function getJobDir(jobFile: string): string {
 	return join(DATA_DIR, `${jobFile}.d`);
 }
 
-function getJobMeta(jobFile: string): string {
-	return join(getJobDir(jobFile), 'meta.json');
+async function storeSave(
+	channel: string,
+	id: string,
+	{ prompt, meta }: { prompt: string; meta: JobMeta },
+): Promise<string> {
+	const messageDir = getMessageDir(channel, id);
+	await Deno.mkdir(messageDir, { recursive: true, mode: 0o755 });
+	await Deno.writeTextFile(join(messageDir, 'prompt.txt'), prompt);
+	await Deno.writeTextFile(
+		join(messageDir, 'meta.json'),
+		JSON.stringify(meta, null, 2),
+	);
+	return messageDir;
+}
+
+async function storeLoad(
+	channel: string,
+	id: string,
+): Promise<{ prompt: string; meta: JobMeta }> {
+	const messageDir = getMessageDir(channel, id);
+	const prompt = (await Deno.readTextFile(join(messageDir, 'prompt.txt')))
+		.trim();
+	const meta = v.parse(
+		JobMeta,
+		JSON.parse(await Deno.readTextFile(join(messageDir, 'meta.json'))),
+	);
+	return { prompt, meta };
+}
+
+async function storeLinkJob(
+	jobFile: string,
+	messageDir: string,
+): Promise<void> {
+	const jobLink = join(DATA_DIR, `${jobFile}.d`);
+	await Deno.symlink(messageDir, jobLink);
+}
+
+function storeResolveJob(jobFile: string): string {
+	return getJobDir(jobFile);
+}
+
+async function storeMarkProcessed(
+	scanDir: string,
+	jobFile: string,
+): Promise<void> {
+	const logPath = join(scanDir, jobFile);
+	const jobDir = getJobDir(jobFile);
+	await Deno.rename(logPath, join(jobDir, jobFile));
+
+	const jobLink = join(DATA_DIR, `${jobFile}.d`);
+	try {
+		const stat = await Deno.lstat(jobLink);
+		if (stat.isSymlink) {
+			await Deno.remove(jobLink);
+		}
+	} catch {
+		// Ignore if not a symlink or doesn't exist
+	}
 }
 
 function mimeToExt(mime: string | undefined, fallback: string): string {
@@ -414,8 +472,22 @@ export function createIngressHandler(
 		try {
 			const channel = 'telegram';
 			const sourceId = `${chatId}_${messageId}`;
-			const messageDir = getMessageDir(channel, sourceId);
-			await Deno.mkdir(messageDir, { recursive: true, mode: 0o755 });
+
+			// Build prompt
+			let prompt = text;
+			if (quote) {
+				prompt = `Quote:\n${quote}\n\n${prompt}`;
+			}
+
+			const meta: JobMeta = {
+				channel: 'telegram',
+				chatId,
+				messageId,
+				userId,
+				chatType: v.parse(v.optional(ChatType, 'private'), ctx.chat?.type),
+			};
+
+			const messageDir = await storeSave(channel, sourceId, { prompt, meta });
 
 			// Download attachments if present
 			const attachmentPaths: string[] = [];
@@ -458,22 +530,16 @@ export function createIngressHandler(
 				}
 			}
 
-			// Build prompt
-			let prompt = text;
-			if (quote) {
-				prompt = `Quote:\n${quote}\n\n${prompt}`;
-			}
+			// Re-write prompt with attachments if any were downloaded
 			if (attachmentPaths.length > 0) {
 				const list = attachmentPaths
 					.map((p, i) => `${i + 1}. @${p}`)
 					.join('\n');
 				prompt = `Attachments:\n${list}\n\n${prompt}`.trim();
+				await Deno.writeTextFile(join(messageDir, 'prompt.txt'), prompt);
 			}
 
 			await ctx.replyWithChatAction('typing');
-
-			// Save prompt
-			await Deno.writeTextFile(join(messageDir, 'prompt.txt'), prompt);
 
 			// Enqueue via nq
 			const nqCmd = new Deno.Command('nq', {
@@ -509,25 +575,16 @@ export function createIngressHandler(
 			}
 
 			// Create jobId.d symlink to natural key directory
-			const jobLink = join(DATA_DIR, `${jobFile}.d`);
 			try {
-				await Deno.symlink(messageDir, jobLink);
+				await storeLinkJob(jobFile, messageDir);
 			} catch (err) {
-				console.error(`[ingress] Failed to create symlink ${jobLink}:`, err);
+				console.error(
+					`[ingress] Failed to create symlink ${
+						join(DATA_DIR, `${jobFile}.d`)
+					}`,
+					err,
+				);
 			}
-
-			const meta: JobMeta = {
-				channel: 'telegram',
-				chatId,
-				messageId,
-				userId,
-				chatType: v.parse(v.optional(ChatType, 'private'), ctx.chat?.type),
-			};
-
-			await Deno.writeTextFile(
-				join(messageDir, 'meta.json'),
-				JSON.stringify(meta, null, 2),
-			);
 
 			console.log(`[ingress] Queued: ${jobFile} from user ${userId}`);
 		} catch (err) {
@@ -536,9 +593,24 @@ export function createIngressHandler(
 	};
 }
 
-export async function ingress(): Promise<void> {
+async function bootstrap(): Promise<{
+	config: Config;
+	workspace: string;
+}> {
 	const config = await loadConfig();
+	const workspace = getWorkspaceDir(config);
+	return { config, workspace };
+}
+
+function createBot(config: Config): Bot {
 	const token = getToken(config);
+	const bot = new Bot(token);
+	bot.api.config.use(autoRetry());
+	return bot;
+}
+
+export async function ingress(): Promise<void> {
+	const { config } = await bootstrap();
 
 	const allowedIds = new Set(config.allowedUsers.map((u) => u.userId));
 
@@ -549,8 +621,7 @@ export async function ingress(): Promise<void> {
 		console.warn(`Add users to ${APP_CONFIG}`);
 	}
 
-	const bot = new Bot(token);
-	bot.api.config.use(autoRetry());
+	const bot = createBot(config);
 
 	const handleMessage = createIngressHandler(bot, allowedIds);
 
@@ -578,10 +649,8 @@ export async function ingress(): Promise<void> {
 }
 
 export async function egress(): Promise<void> {
-	const config = await loadConfig();
-	const token = getToken(config);
-	const bot = new Bot(token);
-	bot.api.config.use(autoRetry());
+	const { config } = await bootstrap();
+	const bot = createBot(config);
 
 	logStartup('egress');
 
@@ -608,7 +677,7 @@ export async function egress(): Promise<void> {
 
 			try {
 				await Deno.stat(path);
-				await Deno.stat(getJobMeta(fileName));
+				await Deno.stat(join(storeResolveJob(fileName), 'meta.json'));
 			} catch {
 				continue;
 			}
@@ -694,8 +763,8 @@ export async function processJob(
 	bot: TelegramBot,
 ): Promise<void> {
 	const logPath = join(scanDir, jobName);
-	const jobDir = getJobDir(jobName);
-	const metaPath = getJobMeta(jobName);
+	const jobDir = storeResolveJob(jobName);
+	const metaPath = join(jobDir, 'meta.json');
 	const meta = v.parse(JobMeta, JSON.parse(await Deno.readTextFile(metaPath)));
 
 	const config = await loadConfig();
@@ -724,18 +793,7 @@ export async function processJob(
 	}
 
 	// Move job output file into .d/ directory (marks as processed)
-	await Deno.rename(logPath, join(jobDir, jobName));
-
-	// Clean up symlink if it exists
-	const jobLink = join(DATA_DIR, `${jobName}.d`);
-	try {
-		const stat = await Deno.lstat(jobLink);
-		if (stat.isSymlink) {
-			await Deno.remove(jobLink);
-		}
-	} catch {
-		// Ignore if not a symlink or doesn't exist (legacy .d directory)
-	}
+	await storeMarkProcessed(scanDir, jobName);
 
 	console.log(`[egress] Sent response for ${jobName} to chat ${meta.chatId}`);
 }
@@ -762,7 +820,71 @@ export interface StreamSender {
 	throttleMs: number;
 }
 
-export function createDraftSender(
+class StreamAccumulator {
+	#pile = '';
+	#final = '';
+	#lastSentAt = 0;
+	#lastSentLen = 0;
+	#hasUnsentDraft = false;
+	#throttleMs: number;
+	#growthChars: number;
+	#send: (text: string) => Promise<void>;
+
+	constructor(
+		{ throttleMs, growthChars, onSend }: {
+			throttleMs: number;
+			growthChars: number;
+			onSend: (text: string) => Promise<void>;
+		},
+	) {
+		this.#throttleMs = throttleMs;
+		this.#growthChars = growthChars;
+		this.#send = onSend;
+	}
+
+	async append(text: string): Promise<void> {
+		this.#pile += text;
+		this.#hasUnsentDraft = true;
+		if (this.#shouldSend()) {
+			await this.#flush();
+		}
+	}
+
+	async flushRemaining(): Promise<void> {
+		if (this.#hasUnsentDraft && this.#pile) {
+			await this.#flush();
+		}
+	}
+
+	setFinal(text: string): void {
+		this.#final = text;
+	}
+
+	result(): string {
+		return this.#final || this.#pile;
+	}
+
+	async #flush(): Promise<void> {
+		if (!this.#pile) return;
+		try {
+			await this.#send(this.#pile);
+			this.#lastSentAt = Date.now();
+			this.#lastSentLen = this.#pile.length;
+			this.#hasUnsentDraft = false;
+		} catch (err) {
+			console.error('[dispatch] stream update failed:', err);
+		}
+	}
+
+	#shouldSend(): boolean {
+		const now = Date.now();
+		const elapsed = now - this.#lastSentAt >= this.#throttleMs;
+		const grown = this.#pile.length - this.#lastSentLen >= this.#growthChars;
+		return elapsed || grown;
+	}
+}
+
+function createDraftSender(
 	{
 		bot,
 		chatId,
@@ -776,12 +898,12 @@ export function createDraftSender(
 	return {
 		throttleMs: THROTTLE_MS,
 		async update(text: string) {
-			await bot.api.sendMessageDraft(chatId, draftId, text);
+			await bot.api.sendMessageDraft(chatId, draftId, truncateDraft(text));
 		},
 	};
 }
 
-export function createEditSender({
+function createEditSender({
 	bot,
 	chatId,
 	messageId,
@@ -793,7 +915,7 @@ export function createEditSender({
 	return {
 		throttleMs: THROTTLE_MS_GROUP,
 		async update(text: string) {
-			await bot.api.editMessageText(chatId, messageId, text);
+			await bot.api.editMessageText(chatId, messageId, truncateDraft(text));
 		},
 	};
 }
@@ -807,38 +929,11 @@ export async function processStreamOutput({
 	sender: StreamSender;
 	parser: Parser;
 }): Promise<string> {
-	let pile = '';
-	let final = '';
-	let lastSentAt = 0;
-	let lastSentLen = 0;
-	let hasUnsentDraft = false;
-
-	async function flushPile(): Promise<void> {
-		if (!pile) return;
-		try {
-			await sender.update(truncateDraft(pile));
-			lastSentAt = Date.now();
-			lastSentLen = pile.length;
-			hasUnsentDraft = false;
-		} catch (err) {
-			console.error('[dispatch] stream update failed:', err);
-		}
-	}
-
-	function shouldSend(): boolean {
-		const now = Date.now();
-		const elapsed = now - lastSentAt >= sender.throttleMs;
-		const grown = pile.length - lastSentLen >= THROTTLE_CHARS;
-		return elapsed || grown;
-	}
-
-	async function appendAndMaybeSend(text: string): Promise<void> {
-		pile += text;
-		hasUnsentDraft = true;
-		if (shouldSend()) {
-			await flushPile();
-		}
-	}
+	const accumulator = new StreamAccumulator({
+		throttleMs: sender.throttleMs,
+		growthChars: THROTTLE_CHARS,
+		onSend: sender.update,
+	});
 
 	const stream = stdout
 		.pipeThrough(new TextDecoderStream())
@@ -854,7 +949,7 @@ export async function processStreamOutput({
 			// Plain text lines are appended with '\n' because TextLineStream strips
 			// the original newline; JSON deltas are fragments concatenated without
 			// separators, so they must not receive an extra newline.
-			await appendAndMaybeSend(`${trimmed}\n`);
+			await accumulator.append(`${trimmed}\n`);
 			continue;
 		}
 
@@ -864,12 +959,12 @@ export async function processStreamOutput({
 			if (!event) continue;
 
 			if (event.type === 'final') {
-				final = event.text;
+				accumulator.setFinal(event.text);
 				continue;
 			}
 
 			if (event.type === 'delta') {
-				await appendAndMaybeSend(event.text);
+				await accumulator.append(event.text);
 			}
 		} catch (err) {
 			// Line started with '{' but wasn't valid JSON or didn't match any
@@ -880,20 +975,17 @@ export async function processStreamOutput({
 				'. Line:',
 				line,
 			);
-			await appendAndMaybeSend(`${trimmed}\n`);
+			await accumulator.append(`${trimmed}\n`);
 		}
 	}
 
-	if (hasUnsentDraft && pile) {
-		await flushPile();
-	}
-
-	return final || pile;
+	await accumulator.flushRemaining();
+	return accumulator.result();
 }
 
 export async function dispatch(args: string[]): Promise<void> {
-	const config = await loadConfig();
-	const agentName = config.agent.name;
+	const { config, workspace } = await bootstrap();
+	const adapter = getAgent(config.agent.name);
 
 	let prompt: string;
 	let meta: JobMeta | undefined;
@@ -914,21 +1006,12 @@ export async function dispatch(args: string[]): Promise<void> {
 			Deno.exit(1);
 		}
 
-		const msgDir = getMessageDir(channel, id);
-		const promptPath = join(msgDir, 'prompt.txt');
-		const metaPath = join(msgDir, 'meta.json');
-
 		try {
-			prompt = (await Deno.readTextFile(promptPath)).trim();
+			const loaded = await storeLoad(channel, id);
+			prompt = loaded.prompt;
+			meta = loaded.meta;
 		} catch {
-			console.error(`Error: message not found: ${promptPath}`);
-			Deno.exit(1);
-		}
-
-		try {
-			meta = v.parse(JobMeta, JSON.parse(await Deno.readTextFile(metaPath)));
-		} catch {
-			console.error(`Error: job meta data not found: ${metaPath}`);
+			console.error(`Error: message not found: ${fullId}`);
 			Deno.exit(1);
 		}
 	} else {
@@ -943,11 +1026,11 @@ export async function dispatch(args: string[]): Promise<void> {
 	}
 
 	const stream = args.includes('--id') ? config.agent.stream : false;
-	const agent = getAgentCommand({ agentName, stream });
+	const agent = adapter.buildCommand({ stream });
 
 	const cmd = new Deno.Command(agent.cmd, {
 		args: agent.args,
-		cwd: getWorkspaceDir(config),
+		cwd: workspace,
 		stdin: 'piped',
 		stdout: stream ? 'piped' : 'inherit',
 		stderr: 'inherit',
@@ -959,9 +1042,7 @@ export async function dispatch(args: string[]): Promise<void> {
 	await writer.close();
 
 	if (stream && meta) {
-		const token = getToken(config);
-		const bot = new Bot(token);
-		bot.api.config.use(autoRetry());
+		const bot = createBot(config);
 		const isGroup = isGroupChat(meta.chatType);
 
 		let sender: StreamSender;
@@ -1001,7 +1082,7 @@ export async function dispatch(args: string[]): Promise<void> {
 		const finalResult = await processStreamOutput({
 			stdout: child.stdout,
 			sender,
-			parser: getAgentParser(agentName),
+			parser: adapter.parseStreamEvent,
 		});
 		console.log(finalResult);
 		const status = await child.status;
