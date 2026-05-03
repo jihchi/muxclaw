@@ -275,7 +275,7 @@ async function storeLoad(
 			JSON.parse(await Deno.readTextFile(metaPath)),
 		);
 	} catch {
-		throw new Error(`job meta data invalid or not found: ${metaPath}`);
+		throw new Error(`job metadata invalid or not found: ${metaPath}`);
 	}
 
 	return { prompt, meta };
