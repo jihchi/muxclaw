@@ -833,69 +833,77 @@ export interface StreamSender {
 	throttleMs: number;
 }
 
-class StreamAccumulator {
-	#pile = '';
-	#final = '';
-	#lastSentAt = 0;
-	#lastSentLen = 0;
-	#hasUnsentDraft = false;
-	#throttleMs: number;
-	#growthChars: number;
-	#send: (text: string) => Promise<void>;
+interface StreamAccumulatorOptions {
+	throttleMs: number;
+	growthChars: number;
+	onSend: (text: string) => Promise<void>;
+}
 
-	constructor(
-		{ throttleMs, growthChars, onSend }: {
-			throttleMs: number;
-			growthChars: number;
-			onSend: (text: string) => Promise<void>;
-		},
-	) {
-		this.#throttleMs = throttleMs;
-		this.#growthChars = growthChars;
-		this.#send = onSend;
-	}
+interface StreamAccumulator {
+	append(text: string): Promise<void>;
+	flushRemaining(): Promise<void>;
+	setFinal(text: string): void;
+	result(): string;
+}
 
-	async append(text: string): Promise<void> {
-		this.#pile += text;
-		this.#hasUnsentDraft = true;
-		if (this.#shouldSend()) {
-			await this.#flush();
-		}
-	}
+const StreamAccumulator: {
+	new (options: StreamAccumulatorOptions): StreamAccumulator;
+	(options: StreamAccumulatorOptions): StreamAccumulator;
+} = function (
+	{ throttleMs, growthChars, onSend }: StreamAccumulatorOptions,
+): StreamAccumulator {
+	let pile = '';
+	let final = '';
+	let lastSentAt = 0;
+	let lastSentLen = 0;
+	let hasUnsentDraft = false;
 
-	async flushRemaining(): Promise<void> {
-		if (this.#hasUnsentDraft && this.#pile) {
-			await this.#flush();
-		}
-	}
+	const shouldSend = (): boolean => {
+		const now = Date.now();
+		const elapsed = now - lastSentAt >= throttleMs;
+		const grown = pile.length - lastSentLen >= growthChars;
+		return elapsed || grown;
+	};
 
-	setFinal(text: string): void {
-		this.#final = text;
-	}
-
-	result(): string {
-		return this.#final || this.#pile;
-	}
-
-	async #flush(): Promise<void> {
-		if (!this.#pile) return;
+	const flush = async (): Promise<void> => {
+		if (!pile) return;
 		try {
-			await this.#send(this.#pile);
-			this.#lastSentAt = Date.now();
-			this.#lastSentLen = this.#pile.length;
-			this.#hasUnsentDraft = false;
+			await onSend(pile);
+			lastSentAt = Date.now();
+			lastSentLen = pile.length;
+			hasUnsentDraft = false;
 		} catch (err) {
 			console.error('[dispatch] stream update failed:', err);
 		}
-	}
+	};
 
-	#shouldSend(): boolean {
-		const now = Date.now();
-		const elapsed = now - this.#lastSentAt >= this.#throttleMs;
-		const grown = this.#pile.length - this.#lastSentLen >= this.#growthChars;
-		return elapsed || grown;
-	}
-}
+	return {
+		async append(text: string): Promise<void> {
+			pile += text;
+			hasUnsentDraft = true;
+			if (shouldSend()) {
+				await flush();
+			}
+		},
+
+		async flushRemaining(): Promise<void> {
+			if (hasUnsentDraft && pile) {
+				await flush();
+			}
+		},
+
+		setFinal(text: string): void {
+			final = text;
+		},
+
+		result(): string {
+			return final || pile;
+		},
+	};
+} as {
+	new (options: StreamAccumulatorOptions): StreamAccumulator;
+	(options: StreamAccumulatorOptions): StreamAccumulator;
+};
 
 function createDraftSender(
 	{
