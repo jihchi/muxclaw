@@ -599,7 +599,9 @@ export function createIngressHandler(
 				);
 			}
 
-			console.log(`[ingress] Queued: ${jobFile} from user ${userId}, --id=${channel}:${sourceId}`);
+			console.log(
+				`[ingress] Queued: ${jobFile} from user ${userId}, --id=${channel}:${sourceId}`,
+			);
 		} catch (err) {
 			console.error('[ingress] Error:', err);
 		}

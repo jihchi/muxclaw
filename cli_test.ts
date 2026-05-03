@@ -616,7 +616,7 @@ describe('dispatch', () => {
 		);
 
 		assertSpyCall(errorStub, 0, {
-			args: [`Error: job meta data invalid or not found: ${expectedPath}`],
+			args: [`Error: job metadata invalid or not found: ${expectedPath}`],
 		});
 
 		assertSpyCalls(exitStub, 1);
