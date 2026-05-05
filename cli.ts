@@ -440,8 +440,8 @@ async function downloadAttachment(
 export function createIngressHandler(
 	bot: TelegramBot,
 	allowedIds: Set<string>,
-) {
-	return async (ctx: IngressContext) => {
+): (ctx: IngressContext) => Promise<void> {
+	return async (ctx: IngressContext): Promise<void> => {
 		const userId = ctx.from?.id;
 		const chatId = ctx.chat?.id;
 		const messageId = ctx.message?.message_id;
@@ -714,7 +714,7 @@ async function sendSplitMessage(
 	chatId: number,
 	text: string,
 	replyToMessageId: number,
-) {
+): Promise<void> {
 	let remaining = text;
 
 	while (remaining.length > TELEGRAM_MAX_MESSAGE_LENGTH) {
@@ -848,10 +848,7 @@ interface StreamAccumulator {
 	result(): string;
 }
 
-const StreamAccumulator: {
-	new (options: StreamAccumulatorOptions): StreamAccumulator;
-	(options: StreamAccumulatorOptions): StreamAccumulator;
-} = function (
+function createStreamAccumulator(
 	{ throttleMs, growthChars, onSend }: StreamAccumulatorOptions,
 ): StreamAccumulator {
 	let pile = '';
@@ -860,15 +857,16 @@ const StreamAccumulator: {
 	let lastSentLen = 0;
 	let hasUnsentDraft = false;
 
-	const shouldSend = (): boolean => {
+	function shouldSend(): boolean {
 		const now = Date.now();
-		const elapsed = now - lastSentAt >= throttleMs;
-		const grown = pile.length - lastSentLen >= growthChars;
-		return elapsed || grown;
-	};
+		const hasWaitedLongEnough = now - lastSentAt >= throttleMs;
+		const hasGrownEnough = pile.length - lastSentLen >= growthChars;
+		return hasWaitedLongEnough || hasGrownEnough;
+	}
 
-	const flush = async (): Promise<void> => {
+	async function flush(): Promise<void> {
 		if (!pile) return;
+
 		try {
 			await onSend(pile);
 			lastSentAt = Date.now();
@@ -877,7 +875,7 @@ const StreamAccumulator: {
 		} catch (err) {
 			console.error('[dispatch] stream update failed:', err);
 		}
-	};
+	}
 
 	return {
 		async append(text: string): Promise<void> {
@@ -902,10 +900,7 @@ const StreamAccumulator: {
 			return final || pile;
 		},
 	};
-} as {
-	new (options: StreamAccumulatorOptions): StreamAccumulator;
-	(options: StreamAccumulatorOptions): StreamAccumulator;
-};
+}
 
 function createDraftSender(
 	{
@@ -952,7 +947,7 @@ export async function processStreamOutput({
 	sender: StreamSender;
 	parser: Parser;
 }): Promise<string> {
-	const accumulator = new StreamAccumulator({
+	const accumulator = createStreamAccumulator({
 		throttleMs: sender.throttleMs,
 		growthChars: THROTTLE_CHARS,
 		onSend: sender.update,
@@ -1149,7 +1144,7 @@ async function ensureDirs(): Promise<void> {
 	]);
 }
 
-async function main() {
+async function main(): Promise<void> {
 	const [command, ...rest] = Deno.args;
 
 	if (!command || command.toLowerCase() === 'help') {
