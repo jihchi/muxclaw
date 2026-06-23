@@ -1,6 +1,5 @@
-ARG DENO_VERSION=2.7.14
-
 # Build stage: nq + zellij
+ARG DENO_VERSION=2.8.3
 FROM denoland/deno:${DENO_VERSION} AS tools-builder
 WORKDIR /app
 
@@ -13,7 +12,7 @@ RUN apt-get update \
 	&& rm -rf /var/lib/apt/lists/*
 
 # Install zellij
-ARG ZELLIJ_VERSION=v0.44.2
+ARG ZELLIJ_VERSION=v0.44.3
 RUN ARCH=$(dpkg --print-architecture) \
 	&& case "$ARCH" in \
 		amd64) ZELLIJ_ARCH="x86_64" ;; \
@@ -25,10 +24,10 @@ RUN ARCH=$(dpkg --print-architecture) \
 	&& chmod +x /usr/local/bin/zellij
 
 # Build stage: pi coding agent
-ARG PI_VERSION=0.73.0
+ARG PI_VERSION=0.79.10
 FROM node:lts-slim AS pi-builder
 ARG PI_VERSION
-RUN npm install -g @mariozechner/pi-coding-agent@${PI_VERSION}
+RUN npm install -g @earendil-works/pi-coding-agent@${PI_VERSION}
 
 # Production stage
 FROM denoland/deno:${DENO_VERSION}
