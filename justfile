@@ -10,7 +10,7 @@ container-build:
 
 container-run:
     docker run -it --rm \
-      -v ./config/muxclaw:/home/deno/.config/muxclaw/ \
-      -v ./config/pi:/home/deno/.pi/ \
+      -v $(pwd)/config/muxclaw:/home/deno/.config/muxclaw/ \
+      -v $(pwd)/config/pi:/home/deno/.pi/ \
       -v $(pwd)/workspace:/workspace \
       jihchi/muxclaw:local

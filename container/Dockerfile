@@ -1,12 +1,14 @@
-# Build stage: nq + zellij
+# Build stage: nq + zellij + CLI tools
 ARG DENO_VERSION=2.8.3
 FROM denoland/deno:${DENO_VERSION} AS tools-builder
 WORKDIR /app
 
-# Install nq and dependencies for zellij
+# Install nq, ripgrep, fd, and dependencies for zellij
 RUN apt-get update \
 	&& apt-get install -y --no-install-recommends \
 		nq \
+		ripgrep \
+		fd-find \
 		curl \
 		ca-certificates \
 	&& rm -rf /var/lib/apt/lists/*
@@ -33,8 +35,9 @@ RUN npm install -g @earendil-works/pi-coding-agent@${PI_VERSION}
 FROM denoland/deno:${DENO_VERSION}
 WORKDIR /app
 
-COPY --from=tools-builder /usr/bin/nq /usr/bin/nqtail /usr/bin/nqterm /usr/bin/
+COPY --from=tools-builder /usr/bin/nq /usr/bin/nqtail /usr/bin/nqterm /usr/bin/rg /usr/bin/fdfind /usr/bin/
 COPY --from=tools-builder /usr/local/bin/zellij /usr/local/bin/
+RUN ln -s /usr/bin/fdfind /usr/bin/fd
 COPY --from=pi-builder /usr/local/bin/node /usr/local/bin/
 COPY --from=pi-builder /usr/local/lib/node_modules /usr/local/lib/node_modules
 RUN ln -s /usr/local/lib/node_modules/@earendil-works/pi-coding-agent/dist/cli.js /usr/local/bin/pi
