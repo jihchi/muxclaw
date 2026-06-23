@@ -37,7 +37,7 @@ COPY --from=tools-builder /usr/bin/nq /usr/bin/nqtail /usr/bin/nqterm /usr/bin/
 COPY --from=tools-builder /usr/local/bin/zellij /usr/local/bin/
 COPY --from=pi-builder /usr/local/bin/node /usr/local/bin/
 COPY --from=pi-builder /usr/local/lib/node_modules /usr/local/lib/node_modules
-RUN ln -s /usr/local/lib/node_modules/@mariozechner/pi-coding-agent/dist/cli.js /usr/local/bin/pi
+RUN ln -s /usr/local/lib/node_modules/@earendil-works/pi-coding-agent/dist/cli.js /usr/local/bin/pi
 
 # Install dependencies
 COPY deno.json deno.lock cli.ts container/layout.kdl .
