@@ -5,5 +5,11 @@ set unstable
 default:
     just --list --justfile {{ justfile() }}
 
-build_docker_image:
+container-build:
     docker build -f container/Dockerfile -t jihchi/muxclaw:local .
+
+container-run:
+    docker run -it --rm \
+      -v ~/.config/muxclaw:/home/deno/.config/muxclaw \
+      -v $(pwd)/workspace:/workspace \
+      jihchi/muxclaw:local
