@@ -16,3 +16,6 @@ mise.local.toml
 # Git worktrees
 .worktrees
 worktrees
+
+# muxclaw
+config/
